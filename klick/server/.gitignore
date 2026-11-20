@@ -1,0 +1,13 @@
+# Environment
+.env
+
+# Build output
+/target/
+
+# SQLite database and uploaded avatars
+/data/
+
+# IDE
+.idea/
+.vscode/
+*.iml
