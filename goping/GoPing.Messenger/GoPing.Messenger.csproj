@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GoPing</AssemblyName>
+    <RootNamespace>GoPing</RootNamespace>
+    <Product>GoPing</Product>
+    <Description>GoPing - a local messenger for you and your friends, with login via GitHub or a server token!</Description>
+  </PropertyGroup>
+
+</Project>

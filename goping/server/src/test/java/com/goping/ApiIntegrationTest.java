@@ -1,0 +1,503 @@
+package com.goping;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.goping.github.GitHubClient;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Base64;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
+
+/**
+ * Сквозные тесты GoPing API: настоящий HTTP, настоящая SQLite во временной папке.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class ApiIntegrationTest {
+
+    private static final String PUBLIC_BASE = "http://cdn.example.test";
+    private static final String ADMIN_SECRET = "integration-admin-secret";
+    private static final Path ROOT = createRoot();
+
+    private static final byte[] PNG = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==");
+
+    @Autowired
+    private TestRestTemplate rest;
+
+    @MockBean
+    private GitHubClient githubClient;
+
+    @BeforeEach
+    void useJdkHttpClient() {
+        // HttpURLConnection (по умолчанию) не умеет PATCH и ломается на 401.
+        rest.getRestTemplate().setRequestFactory(new JdkClientHttpRequestFactory());
+    }
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("app.database-path", () -> ROOT.resolve("test.db").toString());
+        registry.add("app.upload-dir", () -> ROOT.resolve("uploads").toString());
+        registry.add("app.jwt-secret", () -> "integration-test-secret-0123456789abcdef0123456789abcdef");
+        registry.add("app.public-base-url", () -> PUBLIC_BASE);
+        registry.add("app.cors-origins", () -> "*");
+        registry.add("app.auth-rate-limit", () -> "1000");
+        registry.add("app.availability-rate-limit", () -> "1000");
+        registry.add("app.admin-secret", () -> ADMIN_SECRET);
+        registry.add("app.github-client-id", () -> "test-github-client");
+        registry.add("app.github-client-secret", () -> "test-github-secret");
+        registry.add("app.github-callback-url", () -> "http://localhost/api/v1/auth/github/callback");
+    }
+
+    private static Path createRoot() {
+        try {
+            return Files.createTempDirectory("goping-it");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private String suffix() {
+        return UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    private HttpEntity<String> jsonEntity(String json) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return new HttpEntity<>(json, headers);
+    }
+
+    private ResponseEntity<JsonNode> authed(HttpMethod method, String path, String token, Object body) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        if (body != null) {
+            headers.setContentType(MediaType.APPLICATION_JSON);
+        }
+        return rest.exchange(path, method, new HttpEntity<>(body, headers), JsonNode.class);
+    }
+
+    private record AuthData(
+            String id,
+            String username,
+            String nickname,
+            String avatarUrl,
+            String accessToken,
+            String refreshToken
+    ) {
+    }
+
+    private AuthData auth(JsonNode body) {
+        JsonNode user = body.get("user");
+        return new AuthData(
+                user.get("id").asText(),
+                user.get("username").asText(),
+                user.get("nickname").asText(),
+                user.hasNonNull("avatarUrl") ? user.get("avatarUrl").asText() : null,
+                body.get("accessToken").asText(),
+                body.get("refreshToken").asText()
+        );
+    }
+
+    private AuthData tokenLogin(String token) {
+        ResponseEntity<JsonNode> response = rest.postForEntity("/api/v1/auth/token",
+                jsonEntity("{\"token\":\"" + token + "\"}"), JsonNode.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return auth(response.getBody());
+    }
+
+    private JsonNode issueTokenNode(String label) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Admin-Secret", ADMIN_SECRET);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<JsonNode> response = rest.exchange(
+                "/api/v1/admin/tokens", HttpMethod.POST,
+                new HttpEntity<>("{\"label\":\"" + label + "\"}", headers), JsonNode.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return response.getBody();
+    }
+
+    private String issueToken() {
+        return issueTokenNode("test").get("value").asText();
+    }
+
+    private JsonNode adminList() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Admin-Secret", ADMIN_SECRET);
+        ResponseEntity<JsonNode> response = rest.exchange(
+                "/api/v1/admin/tokens", HttpMethod.GET, new HttpEntity<>(headers), JsonNode.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return response.getBody();
+    }
+
+    private JsonNode githubStart() {
+        ResponseEntity<JsonNode> response = rest.getForEntity(
+                "/api/v1/auth/github/start", JsonNode.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        return response.getBody();
+    }
+
+    private AuthData githubLogin(String code) {
+        JsonNode start = githubStart();
+        String state = start.get("state").asText();
+        assertThat(start.get("authorizeUrl").asText())
+                .startsWith("https://github.com/login/oauth/authorize")
+                .contains("state=" + state);
+
+        ResponseEntity<String> callback = rest.getForEntity(
+                "/api/v1/auth/github/callback?code=" + code + "&state=" + state, String.class);
+        assertThat(callback.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(callback.getBody()).contains("GoPing");
+
+        ResponseEntity<JsonNode> poll = rest.getForEntity(
+                "/api/v1/auth/github/poll?state=" + state, JsonNode.class);
+        assertThat(poll.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(poll.getBody().get("status").asText()).isEqualTo("ready");
+        return auth(poll.getBody().get("auth"));
+    }
+
+    @Test
+    void serverTokenActivatesOnceAndAlwaysLogsIntoTheSameUser() {
+        String raw = issueToken();
+        assertThat(raw).matches("GOPING-[A-Za-z0-9_-]{12}");
+
+        AuthData first = tokenLogin(raw);
+        assertThat(first.username()).startsWith("ping_");
+        assertThat(first.nickname()).startsWith("Ping ");
+
+        AuthData second = tokenLogin(raw);
+        assertThat(second.id()).isEqualTo(first.id());
+        assertThat(second.username()).isEqualTo(first.username());
+
+        boolean activated = false;
+        for (JsonNode item : adminList().get("items")) {
+            if (first.id().equals(item.path("userId").asText())) {
+                activated = true;
+                assertThat(item.path("activatedAt").isNull()).isFalse();
+            }
+        }
+        assertThat(activated).isTrue();
+    }
+
+    @Test
+    void adminSecretIsRequiredAndRevokedTokenCannotLogin() {
+        ResponseEntity<JsonNode> noSecret = rest.postForEntity(
+                "/api/v1/admin/tokens", jsonEntity("{}"), JsonNode.class);
+        assertThat(noSecret.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(noSecret.getBody().get("error").get("code").asText())
+                .isEqualTo("ADMIN_UNAUTHORIZED");
+
+        HttpHeaders wrong = new HttpHeaders();
+        wrong.set("X-Admin-Secret", "wrong");
+        wrong.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<JsonNode> wrongSecret = rest.exchange(
+                "/api/v1/admin/tokens", HttpMethod.POST,
+                new HttpEntity<>("{}", wrong), JsonNode.class);
+        assertThat(wrongSecret.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        JsonNode issued = issueTokenNode("revoked");
+        String raw = issued.get("value").asText();
+        String id = issued.get("token").get("id").asText();
+
+        HttpHeaders admin = new HttpHeaders();
+        admin.set("X-Admin-Secret", ADMIN_SECRET);
+        ResponseEntity<Void> revoked = rest.exchange(
+                "/api/v1/admin/tokens/" + id, HttpMethod.DELETE,
+                new HttpEntity<>(admin), Void.class);
+        assertThat(revoked.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        ResponseEntity<JsonNode> login = rest.postForEntity(
+                "/api/v1/auth/token", jsonEntity("{\"token\":\"" + raw + "\"}"), JsonNode.class);
+        assertThat(login.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(login.getBody().get("error").get("code").asText())
+                .isEqualTo("INVALID_SERVER_TOKEN");
+    }
+
+    @Test
+    void unknownAndMalformedServerTokensAreRejected() {
+        ResponseEntity<JsonNode> unknown = rest.postForEntity("/api/v1/auth/token",
+                jsonEntity("{\"token\":\"GOPING-abcdefghijkl\"}"), JsonNode.class);
+        assertThat(unknown.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(unknown.getBody().get("error").get("code").asText())
+                .isEqualTo("INVALID_SERVER_TOKEN");
+
+        ResponseEntity<JsonNode> malformed = rest.postForEntity("/api/v1/auth/token",
+                jsonEntity("{\"token\":\"not-a-token\"}"), JsonNode.class);
+        assertThat(malformed.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void tokenUserCanChangeAutofilledProfile() {
+        AuthData auth = tokenLogin(issueToken());
+        String newUsername = "edited_" + suffix();
+
+        ResponseEntity<JsonNode> patched = authed(HttpMethod.PATCH, "/api/v1/users/me", auth.accessToken(),
+                "{\"nickname\":\"Мой ник\",\"username\":\"" + newUsername + "\",\"bio\":\"локальный профиль\"}");
+        assertThat(patched.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(patched.getBody().get("user").get("nickname").asText()).isEqualTo("Мой ник");
+        assertThat(patched.getBody().get("user").get("username").asText()).isEqualTo(newUsername);
+
+        ResponseEntity<JsonNode> me = authed(HttpMethod.GET, "/api/v1/users/me", auth.accessToken(), null);
+        assertThat(me.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(me.getBody().get("user").get("bio").asText()).isEqualTo("локальный профиль");
+        assertThat(me.getBody().get("user").has("email")).isFalse();
+
+        JsonNode availability = rest.getForEntity(
+                "/api/v1/users/username-available?username=" + newUsername, JsonNode.class).getBody();
+        assertThat(availability.get("available").asBoolean()).isFalse();
+        assertThat(availability.get("reason").asText()).isEqualTo("taken");
+    }
+
+    @Test
+    void usernameConflictBetweenTwoTokenUsers() {
+        AuthData first = tokenLogin(issueToken());
+        AuthData second = tokenLogin(issueToken());
+
+        ResponseEntity<JsonNode> conflict = authed(HttpMethod.PATCH, "/api/v1/users/me", second.accessToken(),
+                "{\"username\":\"" + first.username() + "\"}");
+        assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(conflict.getBody().get("error").get("code").asText())
+                .isEqualTo("USERNAME_TAKEN");
+    }
+
+    @Test
+    void githubLoginFillsAvatarAndNicknameAndKeepsLaterEdits() {
+        String login = "octo_" + suffix();
+        when(githubClient.authenticate("good-code")).thenReturn(new GitHubClient.Profile(
+                900000L + Math.abs(login.hashCode()),
+                login,
+                "Octo Cat",
+                "https://avatars.example/octo.png"
+        ));
+
+        AuthData first = githubLogin("good-code");
+        assertThat(first.username()).isEqualTo(login);
+        assertThat(first.nickname()).isEqualTo("Octo Cat");
+        assertThat(first.avatarUrl()).isEqualTo("https://avatars.example/octo.png");
+
+        ResponseEntity<JsonNode> patched = authed(HttpMethod.PATCH, "/api/v1/users/me", first.accessToken(),
+                "{\"nickname\":\"Мой GitHub\"}");
+        assertThat(patched.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        AuthData again = githubLogin("good-code");
+        assertThat(again.id()).isEqualTo(first.id());
+        assertThat(again.nickname()).isEqualTo("Мой GitHub");
+        assertThat(again.avatarUrl()).isEqualTo("https://avatars.example/octo.png");
+    }
+
+    @Test
+    void githubLoginWithoutProfileIsPendingAndUnknownStateExpires() {
+        JsonNode start = githubStart();
+        String state = start.get("state").asText();
+
+        ResponseEntity<JsonNode> pending = rest.getForEntity(
+                "/api/v1/auth/github/poll?state=" + state, JsonNode.class);
+        assertThat(pending.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(pending.getBody().get("status").asText()).isEqualTo("pending");
+
+        ResponseEntity<JsonNode> missing = rest.getForEntity(
+                "/api/v1/auth/github/poll?state=unknown-state", JsonNode.class);
+        assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.GONE);
+        assertThat(missing.getBody().get("error").get("code").asText())
+                .isEqualTo("GITHUB_STATE_EXPIRED");
+    }
+
+    @Test
+    void githubCallbackWithoutStateOrWithCancellationShowsFailurePage() {
+        ResponseEntity<String> noState = rest.getForEntity(
+                "/api/v1/auth/github/callback", String.class);
+        assertThat(noState.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(noState.getBody()).contains("Не удалось войти");
+
+        JsonNode start = githubStart();
+        String state = start.get("state").asText();
+        ResponseEntity<String> cancelled = rest.getForEntity(
+                "/api/v1/auth/github/callback?error=access_denied&state=" + state, String.class);
+        assertThat(cancelled.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(cancelled.getBody()).contains("Не удалось войти");
+
+        ResponseEntity<JsonNode> afterCancel = rest.getForEntity(
+                "/api/v1/auth/github/poll?state=" + state, JsonNode.class);
+        assertThat(afterCancel.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(afterCancel.getBody().get("error").get("code").asText())
+                .isEqualTo("GITHUB_AUTH_FAILED");
+    }
+
+    @Test
+    void protectedEndpointsRequireValidToken() {
+        ResponseEntity<JsonNode> missing = rest.getForEntity("/api/v1/users/me", JsonNode.class);
+        assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(missing.getBody().get("error").get("code").asText()).isEqualTo("UNAUTHORIZED");
+
+        ResponseEntity<JsonNode> bad = authed(HttpMethod.GET, "/api/v1/users/me", "not.a.jwt", null);
+        assertThat(bad.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void refreshRotatesAndDetectsReuse() {
+        AuthData auth = tokenLogin(issueToken());
+
+        ResponseEntity<JsonNode> first = rest.postForEntity("/api/v1/auth/refresh",
+                jsonEntity("{\"refreshToken\":\"" + auth.refreshToken() + "\"}"), JsonNode.class);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String rotated = first.getBody().get("refreshToken").asText();
+        assertThat(rotated).isNotEqualTo(auth.refreshToken());
+
+        ResponseEntity<JsonNode> reuse = rest.postForEntity("/api/v1/auth/refresh",
+                jsonEntity("{\"refreshToken\":\"" + auth.refreshToken() + "\"}"), JsonNode.class);
+        assertThat(reuse.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(reuse.getBody().get("error").get("code").asText())
+                .isEqualTo("INVALID_REFRESH_TOKEN");
+
+        ResponseEntity<JsonNode> afterReuse = rest.postForEntity("/api/v1/auth/refresh",
+                jsonEntity("{\"refreshToken\":\"" + rotated + "\"}"), JsonNode.class);
+        assertThat(afterReuse.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void logoutRevokesRefreshToken() {
+        AuthData auth = tokenLogin(issueToken());
+
+        ResponseEntity<Void> logout = rest.postForEntity("/api/v1/auth/logout",
+                jsonEntity("{\"refreshToken\":\"" + auth.refreshToken() + "\"}"), Void.class);
+        assertThat(logout.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        ResponseEntity<JsonNode> refresh = rest.postForEntity("/api/v1/auth/refresh",
+                jsonEntity("{\"refreshToken\":\"" + auth.refreshToken() + "\"}"), JsonNode.class);
+        assertThat(refresh.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void avatarUploadServeAndDeleteReplacesGithubAvatar() {
+        AuthData auth = tokenLogin(issueToken());
+
+        MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
+        form.add("avatar", new ByteArrayResource(PNG) {
+            @Override
+            public String getFilename() {
+                return "avatar.png";
+            }
+        });
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(auth.accessToken());
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<JsonNode> uploaded = rest.exchange(
+                "/api/v1/users/me/avatar", HttpMethod.POST, new HttpEntity<>(form, headers), JsonNode.class);
+
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String avatarUrl = uploaded.getBody().get("user").get("avatarUrl").asText();
+        assertThat(avatarUrl).startsWith(PUBLIC_BASE + "/media/avatars/").endsWith(".png");
+
+        String mediaPath = avatarUrl.substring(PUBLIC_BASE.length());
+        ResponseEntity<byte[]> media = rest.getForEntity(mediaPath, byte[].class);
+        assertThat(media.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(media.getHeaders().getContentType()).isEqualTo(MediaType.IMAGE_PNG);
+        assertThat(media.getBody()).isEqualTo(PNG);
+
+        ResponseEntity<JsonNode> deleted = authed(HttpMethod.DELETE, "/api/v1/users/me/avatar",
+                auth.accessToken(), null);
+        assertThat(deleted.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(deleted.getBody().get("user").get("avatarUrl").isNull()).isTrue();
+
+        ResponseEntity<byte[]> gone = rest.getForEntity(mediaPath, byte[].class);
+        assertThat(gone.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void nonImageAvatarIsRejected() {
+        AuthData auth = tokenLogin(issueToken());
+
+        MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
+        form.add("avatar", new ByteArrayResource("not an image".getBytes()) {
+            @Override
+            public String getFilename() {
+                return "notes.txt";
+            }
+        });
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(auth.accessToken());
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<JsonNode> response = rest.exchange(
+                "/api/v1/users/me/avatar", HttpMethod.POST, new HttpEntity<>(form, headers), JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        assertThat(response.getBody().get("error").get("code").asText())
+                .isEqualTo("UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    @Test
+    void oversizedAvatarIsRejectedWithCleanResponse() {
+        AuthData auth = tokenLogin(issueToken());
+
+        byte[] big = new byte[6 * 1024 * 1024];
+        MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
+        form.add("avatar", new ByteArrayResource(big) {
+            @Override
+            public String getFilename() {
+                return "big.png";
+            }
+        });
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(auth.accessToken());
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<JsonNode> response = rest.exchange(
+                "/api/v1/users/me/avatar", HttpMethod.POST, new HttpEntity<>(form, headers), JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE);
+        assertThat(response.getBody().get("error").get("code").asText())
+                .isEqualTo("AVATAR_TOO_LARGE");
+    }
+
+    @Test
+    void chatsReturnEmptyStub() {
+        AuthData auth = tokenLogin(issueToken());
+
+        ResponseEntity<JsonNode> response = authed(HttpMethod.GET, "/api/v1/chats", auth.accessToken(), null);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody().get("items").isArray()).isTrue();
+        assertThat(response.getBody().get("items").size()).isZero();
+        assertThat(response.getBody().get("nextCursor").isNull()).isTrue();
+    }
+
+    @Test
+    void corsPreflightAndUnknownRoutes() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setOrigin("http://example.com");
+        headers.setAccessControlRequestMethod(HttpMethod.GET);
+        ResponseEntity<Void> preflight = rest.exchange(
+                "/api/v1/users/me", HttpMethod.OPTIONS, new HttpEntity<>(headers), Void.class);
+        assertThat(preflight.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(preflight.getHeaders().getAccessControlAllowOrigin()).isEqualTo("http://example.com");
+
+        AuthData auth = tokenLogin(issueToken());
+        ResponseEntity<JsonNode> unknown = authed(HttpMethod.GET, "/api/v1/unknown-route",
+                auth.accessToken(), null);
+        assertThat(unknown.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(unknown.getBody().get("error").get("code").asText()).isEqualTo("NOT_FOUND");
+    }
+}

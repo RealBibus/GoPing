@@ -1,0 +1,51 @@
+spring:
+  application:
+    name: goping
+  config:
+    import: optional:file:.env[.properties]
+  servlet:
+    multipart:
+      # Парсер принимает чуть больше, чем MAX_AVATAR_BYTES, чтобы клиент
+      # успел получить аккуратный 413 AVATAR_TOO_LARGE, а не обрыв соединения.
+      max-file-size: ${MAX_UPLOAD_BYTES:10485760}
+      max-request-size: ${MAX_UPLOAD_BYTES:10485760}
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: ${HTTP_PORT:8080}
+  shutdown: graceful
+  tomcat:
+    # Позволяет дочитать слишком большое тело и вернуть клиенту 413, а не оборвать соединение.
+    max-swallow-size: 20MB
+  error:
+    whitelabel:
+      enabled: false
+
+app:
+  database-path: ${DATABASE_PATH:./data/goping.db}
+  jwt-secret: ${JWT_SECRET:}
+  jwt-issuer: ${JWT_ISSUER:goping}
+  access-token-ttl: ${ACCESS_TOKEN_TTL:PT15M}
+  refresh-token-ttl: ${REFRESH_TOKEN_TTL:P30D}
+  upload-dir: ${UPLOAD_DIR:./data/uploads}
+  public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
+  max-avatar-bytes: ${MAX_AVATAR_BYTES:5242880}
+  auth-rate-limit: ${AUTH_RATE_LIMIT:30}
+  availability-rate-limit: ${AVAILABILITY_RATE_LIMIT:120}
+  cors-origins: ${CORS_ORIGINS:*}
+  auto-migrate: ${AUTO_MIGRATE:true}
+
+  # Секрет для выдачи серверных токенов. Пусто — админ-API выключен.
+  admin-secret: ${ADMIN_SECRET:}
+
+  # GitHub OAuth App (Settings -> Developer settings -> OAuth Apps).
+  github-client-id: ${GITHUB_CLIENT_ID:}
+  github-client-secret: ${GITHUB_CLIENT_SECRET:}
+  github-callback-url: ${GITHUB_CALLBACK_URL:http://localhost:8080/api/v1/auth/github/callback}
+  github-scope: ${GITHUB_SCOPE:read:user}
+
+logging:
+  level:
+    root: INFO
