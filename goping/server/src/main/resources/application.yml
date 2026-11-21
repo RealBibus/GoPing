@@ -40,6 +40,10 @@ app:
   # Секрет для выдачи серверных токенов. Пусто — админ-API выключен.
   admin-secret: ${ADMIN_SECRET:}
 
+  # Ключ шифрования сообщений (ГОСТ 34.12-2015 «Кузнечик», CTR).
+  # 64 hex-символа или Base64 от 32 байт. Пусто — ключ выводится из JWT_SECRET.
+  message-key: ${MESSAGE_KEY:}
+
   # GitHub OAuth App (Settings -> Developer settings -> OAuth Apps).
   github-client-id: ${GITHUB_CLIENT_ID:}
   github-client-secret: ${GITHUB_CLIENT_SECRET:}

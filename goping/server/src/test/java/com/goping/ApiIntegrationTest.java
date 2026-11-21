@@ -16,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
@@ -49,6 +50,9 @@ class ApiIntegrationTest {
 
     @MockBean
     private GitHubClient githubClient;
+
+    @Autowired
+    private JdbcTemplate jdbc;
 
     @BeforeEach
     void useJdkHttpClient() {
@@ -499,5 +503,167 @@ class ApiIntegrationTest {
                 auth.accessToken(), null);
         assertThat(unknown.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(unknown.getBody().get("error").get("code").asText()).isEqualTo("NOT_FOUND");
+    }
+
+    // ---------- сообщения и ГОСТ-шифрование ----------
+
+    private String createDirectChat(String token, String username) {
+        ResponseEntity<JsonNode> response = authed(HttpMethod.POST, "/api/v1/chats", token,
+                "{\"username\":\"" + username + "\"}");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody().get("kind").asText()).isEqualTo("direct");
+        return response.getBody().get("id").asText();
+    }
+
+    @Test
+    void messagesAreEncryptedWithGostAndVisibleToBothMembers() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+        JsonNode chat = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null).getBody()
+                .get("items").get(0);
+        assertThat(chat.get("id").asText()).isEqualTo(chatId);
+        assertThat(chat.get("title").asText()).isEqualTo(bob.nickname());
+
+        String plain = "Привет, Боб! ГОСТ Р 34.12-2015 «Кузнечик»";
+        ResponseEntity<JsonNode> sent = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(),
+                "{\"text\":\"" + plain + "\"}");
+
+        assertThat(sent.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(sent.getBody().get("text").asText()).isEqualTo(plain);
+        assertThat(sent.getBody().get("algorithm").asText())
+                .isEqualTo("GOST34.12-2015/KUZNYECHIK/CTR");
+        assertThat(sent.getBody().get("sender").get("id").asText()).isEqualTo(alice.id());
+
+        var stored = jdbc.queryForMap(
+                "SELECT ciphertext, nonce, mac FROM messages WHERE chat_id = ?", chatId);
+        byte[] ciphertext = Base64.getDecoder().decode((String) stored.get("ciphertext"));
+        assertThat(ciphertext).isNotEqualTo(plain.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(new String(ciphertext, java.nio.charset.StandardCharsets.UTF_8))
+                .doesNotContain("Привет");
+        assertThat((String) stored.get("nonce")).isNotBlank();
+        assertThat((String) stored.get("mac")).isNotBlank();
+
+        ResponseEntity<JsonNode> bobList = authed(HttpMethod.GET,
+                "/api/v1/chats/" + chatId + "/messages", bob.accessToken(), null);
+        assertThat(bobList.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(bobList.getBody().get("items").size()).isEqualTo(1);
+        assertThat(bobList.getBody().get("items").get(0).get("text").asText()).isEqualTo(plain);
+
+        ResponseEntity<JsonNode> reply = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", bob.accessToken(),
+                "{\"text\":\"Привет, Алиса!\"}");
+        assertThat(reply.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        JsonNode aliceList = authed(HttpMethod.GET,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(), null).getBody();
+        assertThat(aliceList.get("items").size()).isEqualTo(2);
+        assertThat(aliceList.get("items").get(0).get("text").asText()).isEqualTo(plain);
+        assertThat(aliceList.get("items").get(1).get("sender").get("id").asText()).isEqualTo(bob.id());
+    }
+
+    @Test
+    void tamperedMessageIsReportedAsDamaged() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages", alice.accessToken(),
+                "{\"text\":\"секрет\"}");
+
+        String ciphertext = jdbc.queryForObject(
+                "SELECT ciphertext FROM messages WHERE chat_id = ?", String.class, chatId);
+        byte[] raw = Base64.getDecoder().decode(ciphertext);
+        jdbc.update("UPDATE messages SET ciphertext = ? WHERE chat_id = ?",
+                Base64.getEncoder().encodeToString(new byte[raw.length]), chatId);
+
+        JsonNode items = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                bob.accessToken(), null).getBody().get("items");
+        assertThat(items.size()).isEqualTo(1);
+        assertThat(items.get(0).get("text").asText()).startsWith("[сообщение повреждено");
+    }
+
+    @Test
+    void outsiderCannotReadOrWriteChat() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        AuthData eve = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        ResponseEntity<JsonNode> read = authed(HttpMethod.GET,
+                "/api/v1/chats/" + chatId + "/messages", eve.accessToken(), null);
+        assertThat(read.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+
+        ResponseEntity<JsonNode> write = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", eve.accessToken(),
+                "{\"text\":\"чужой\"}");
+        assertThat(write.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void creatingSameDirectChatIsIdempotent() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+
+        String first = createDirectChat(alice.accessToken(), bob.username());
+        String second = createDirectChat(alice.accessToken(), bob.username());
+        String fromBob = createDirectChat(bob.accessToken(), alice.username());
+
+        assertThat(second).isEqualTo(first);
+        assertThat(fromBob).isEqualTo(first);
+        assertThat(authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
+                .getBody().get("items").size()).isEqualTo(1);
+    }
+
+    @Test
+    void chatCarriesPeerUsernameAndAvatarUrl() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+        JsonNode chat = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null).getBody()
+                .get("items").get(0);
+        assertThat(chat.get("id").asText()).isEqualTo(chatId);
+        assertThat(chat.get("username").asText()).isEqualTo(bob.username());
+
+        ResponseEntity<JsonNode> profile = authed(
+                HttpMethod.GET, "/api/v1/users/username/" + bob.username(), alice.accessToken(), null);
+        assertThat(profile.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(profile.getBody().get("user").get("id").asText()).isEqualTo(bob.id());
+        assertThat(profile.getBody().get("user").get("username").asText()).isEqualTo(bob.username());
+        assertThat(profile.getBody().get("user").get("nickname").asText()).isEqualTo(bob.nickname());
+    }
+
+    @Test
+    void chatAndMessageValidation() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+
+        ResponseEntity<JsonNode> self = authed(HttpMethod.POST, "/api/v1/chats",
+                alice.accessToken(), "{\"username\":\"" + alice.username() + "\"}");
+        assertThat(self.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+
+        ResponseEntity<JsonNode> missing = authed(HttpMethod.POST, "/api/v1/chats",
+                alice.accessToken(), "{\"username\":\"nobody_here_123\"}");
+        assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        ResponseEntity<JsonNode> empty = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(), "{\"text\":\"   \"}");
+        assertThat(empty.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+
+        String tooLong = "x".repeat(4001);
+        ResponseEntity<JsonNode> oversized = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(),
+                "{\"text\":\"" + tooLong + "\"}");
+        assertThat(oversized.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+
+        ResponseEntity<JsonNode> badId = authed(HttpMethod.GET,
+                "/api/v1/chats/not-a-uuid/messages", alice.accessToken(), null);
+        assertThat(badId.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(badId.getBody().get("error").get("code").asText()).isEqualTo("INVALID_ID");
     }
 }

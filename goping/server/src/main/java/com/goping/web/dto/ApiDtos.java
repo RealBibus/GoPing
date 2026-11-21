@@ -60,9 +60,52 @@ public final class ApiDtos {
     public record AdminTokenListResponse(List<AdminTokenDto> items) {
     }
 
-    public record ChatDto(String id, String kind, String title, Instant createdAt) {
+    public record ChatDto(
+            String id,
+            String kind,
+            String title,
+            String username,
+            String avatarUrl,
+            Instant createdAt,
+            String peerUserId,
+            String lastMessageText,
+            Instant lastMessageAt,
+            boolean peerOnline,
+            Instant peerLastSeenAt,
+            boolean peerTyping
+    ) {
     }
 
     public record ChatListResponse(List<ChatDto> items, String nextCursor) {
+    }
+
+    public record CreateChatRequest(String username) {
+    }
+
+    public record SendMessageRequest(String text, String replyToId) {
+    }
+
+    public record DeleteMessageRequest(boolean forEveryone) {
+    }
+
+    public record MessageSenderDto(String id, String username, String nickname, String avatarUrl) {
+    }
+
+    public record ReplyPreviewDto(String id, String text, String senderNickname) {
+    }
+
+    public record MessageDto(
+            String id,
+            String chatId,
+            MessageSenderDto sender,
+            String text,
+            String algorithm,
+            Instant createdAt,
+            ReplyPreviewDto replyTo,
+            String status
+    ) {
+    }
+
+    public record MessageListResponse(List<MessageDto> items, String nextCursor) {
     }
 }

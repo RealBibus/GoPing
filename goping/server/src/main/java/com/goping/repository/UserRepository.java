@@ -73,6 +73,16 @@ public class UserRepository {
         return users.stream().findFirst();
     }
 
+    public Optional<User> findByUsername(String username) {
+        if (username == null || username.isBlank()) {
+            return Optional.empty();
+        }
+        List<User> users = jdbc.query(
+                "SELECT " + COLUMNS + " FROM users WHERE username = ? LIMIT 1",
+                USER_MAPPER, username);
+        return users.stream().findFirst();
+    }
+
     public Optional<User> findByGithubId(String githubId) {
         if (githubId == null || githubId.isBlank()) {
             return Optional.empty();

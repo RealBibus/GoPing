@@ -23,6 +23,7 @@ public record AppProperties(
         List<String> corsOrigins,
         boolean autoMigrate,
         String adminSecret,
+        String messageKey,
         String githubClientId,
         String githubClientSecret,
         String githubCallbackUrl,
@@ -68,6 +69,7 @@ public record AppProperties(
             corsOrigins = List.of("*");
         }
         adminSecret = adminSecret == null ? "" : adminSecret.trim();
+        messageKey = messageKey == null ? "" : messageKey.trim();
         githubClientId = githubClientId == null ? "" : githubClientId.trim();
         githubClientSecret = githubClientSecret == null ? "" : githubClientSecret.trim();
         if (githubCallbackUrl == null || githubCallbackUrl.isBlank()) {

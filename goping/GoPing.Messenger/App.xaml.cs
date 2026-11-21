@@ -78,7 +78,7 @@ public partial class App : Application
             "AccentBrush", "AccentSoftBrush",
             "DangerBrush", "DangerSoftBrush",
             "PrimaryBrush", "PrimaryHoverBrush", "PrimaryPressBrush",
-            "PrimaryForegroundBrush"
+            "PrimaryForegroundBrush", "OnlineBrush"
         };
 
         foreach (var key in keys)

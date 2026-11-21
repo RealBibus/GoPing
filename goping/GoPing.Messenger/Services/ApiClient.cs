@@ -154,8 +154,53 @@ public sealed class ApiClient : IDisposable
         return envelope.User;
     }
 
+    public Task HeartbeatAsync(CancellationToken ct = default)
+        => SendAuthenticatedEmptyAsync(HttpMethod.Post, "api/v1/presence/heartbeat", null, ct);
+
+    public Task NotifyTypingAsync(string chatId, CancellationToken ct = default)
+        => SendAuthenticatedEmptyAsync(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/typing",
+            null,
+            ct);
+
     public Task<ChatListResponse> GetChatsAsync(CancellationToken ct = default)
         => SendAuthenticatedAsync<ChatListResponse>(HttpMethod.Get, "api/v1/chats?limit=30", null, ct);
+
+    /// <summary>Профиль пользователя по username (для личных чатов). </summary>
+    public async Task<UserProfile> GetUserByUsernameAsync(string username, CancellationToken ct = default)
+    {
+        UserEnvelope envelope = await SendAuthenticatedAsync<UserEnvelope>(
+            HttpMethod.Get,
+            "api/v1/users/username/" + Uri.EscapeDataString(username),
+            null,
+            ct);
+        return envelope.User;
+    }
+
+    /// <summary>Создаёт личный чат по username или возвращает уже существующий.</summary>
+    public Task<ChatSummary> CreateChatAsync(string username, CancellationToken ct = default)
+        => SendAuthenticatedAsync<ChatSummary>(
+            HttpMethod.Post,
+            "api/v1/chats",
+            JsonContent.Create(new { username }, options: JsonOptions),
+            ct);
+
+    public Task<MessageListResponse> GetMessagesAsync(string chatId, CancellationToken ct = default)
+        => SendAuthenticatedAsync<MessageListResponse>(
+            HttpMethod.Get,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages?limit=100",
+            null,
+            ct);
+
+    /// <summary>Отправляет сообщение; сервер шифрует его ГОСТ 34.12-2015.</summary>
+    public Task<ChatMessage> SendMessageAsync(
+        string chatId, string text, CancellationToken ct = default)
+        => SendAuthenticatedAsync<ChatMessage>(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages",
+            JsonContent.Create(new { text }, options: JsonOptions),
+            ct);
 
     private async Task EnsureFreshTokenAsync(CancellationToken ct)
     {
@@ -197,6 +242,19 @@ public sealed class ApiClient : IDisposable
         await EnsureSuccessAsync(response, ct);
         T? result = await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct);
         return result ?? throw new ApiException("EMPTY_RESPONSE", "The server returned an empty response.");
+    }
+
+    private async Task SendAuthenticatedEmptyAsync(
+        HttpMethod method, string path, HttpContent? content, CancellationToken ct)
+    {
+        await EnsureFreshTokenAsync(ct);
+        using var request = new HttpRequestMessage(method, path) { Content = content };
+        if (_accessToken is not null)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+        }
+        using HttpResponseMessage response = await SendAsync(request, ct);
+        await EnsureSuccessAsync(response, ct);
     }
 
     private async Task<HttpResponseMessage> SendAsync(

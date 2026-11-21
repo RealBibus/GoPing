@@ -56,7 +56,8 @@ public class AuthFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
         if (!path.startsWith("/api/v1/")
                 || PUBLIC_PATHS.contains(path)
-                || path.startsWith("/api/v1/admin/")) {
+                || path.startsWith("/api/v1/admin/")
+                || path.startsWith("/api/v1/ws")) {
             filterChain.doFilter(request, response);
             return;
         }

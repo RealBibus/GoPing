@@ -1,6 +1,7 @@
 <Application x:Class="GoPing.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:GoPing.Converters">
     <Application.Resources>
         <SolidColorBrush x:Key="BgBrush" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="SurfaceBrush" Color="#FAFAFA"/>
@@ -10,8 +11,9 @@
         <SolidColorBrush x:Key="TextBrush" Color="#18181B"/>
         <SolidColorBrush x:Key="MutedBrush" Color="#71717A"/>
         <SolidColorBrush x:Key="FaintBrush" Color="#A1A1AA"/>
-        <SolidColorBrush x:Key="AccentBrush" Color="#16A34A"/>
-        <SolidColorBrush x:Key="AccentSoftBrush" Color="#DCFCE7"/>
+        <SolidColorBrush x:Key="AccentBrush" Color="#3F7A5C"/>
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#EEF2EF"/>
+        <SolidColorBrush x:Key="OnlineBrush" Color="#3F7A5C"/>
         <SolidColorBrush x:Key="DangerBrush" Color="#DC2626"/>
         <SolidColorBrush x:Key="DangerSoftBrush" Color="#FEF2F2"/>
         <SolidColorBrush x:Key="PrimaryBrush" Color="#18181B"/>
@@ -230,5 +232,9 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <converters:AvatarImageSourceConverter x:Key="AvatarImageSourceConverter"/>
+        <converters:InitialLetterConverter x:Key="InitialLetterConverter"/>
     </Application.Resources>
 </Application>

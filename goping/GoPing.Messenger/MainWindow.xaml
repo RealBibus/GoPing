@@ -1,4 +1,4 @@
-<Window x:Class="GoPing.MainWindow"
+﻿<Window x:Class="GoPing.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="GoPing"
@@ -41,7 +41,7 @@
                             Click="ThemeToggleButton_Click" Content="&#xE708;"/>
                     <Button Style="{StaticResource TitleBarButton}" Content="&#xE921;"
                             Click="MinimizeButton_Click" ToolTip="Minimize"/>
-                    <Button Style="{StaticResource CloseTitleBarButton}" Content="&#xE8BB;"
+                    <Button x:Name="CloseTitleBarButton" Style="{StaticResource CloseTitleBarButton}" Content="&#xE8BB;"
                             Margin="2,0,0,0" Click="CloseButton_Click" ToolTip="Close"/>
                 </StackPanel>
             </Grid>
@@ -86,30 +86,249 @@
 
                 <Grid Grid.Column="2">
                     <Grid x:Name="ChatPanel">
-                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="30">
-                            <Border Width="52" Height="52" CornerRadius="12"
-                                    Background="{DynamicResource SurfaceBrush}"
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="226"/>
+                            <ColumnDefinition Width="1"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Список чатов -->
+                        <Grid Grid.Column="0" Margin="14,18,14,14">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <Grid>
+                                <TextBlock Text="Chats" FontSize="16" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
+                                <Button x:Name="NewChatButton" Style="{StaticResource SecondaryButton}"
+                                        Width="30" Height="30" Padding="0" FontSize="17"
+                                        HorizontalAlignment="Right" Content="+"
+                                        Click="NewChatButton_Click" ToolTip="New chat"/>
+                            </Grid>
+                            <ListBox x:Name="ChatList" Grid.Row="1" Margin="0,12,0,0"
+                                     Background="Transparent" BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     SelectionChanged="ChatList_SelectionChanged">
+                                <ListBox.Resources>
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Margin" Value="0,0,0,3"/>
+                                        <Setter Property="Padding" Value="10,8"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                                        <Setter Property="Cursor" Value="Hand"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="Bd" CornerRadius="8"
+                                                            Background="Transparent"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="Bd" Property="Background"
+                                                                    Value="{DynamicResource SurfaceHoverBrush}"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="Bd" Property="Background"
+                                                                    Value="{DynamicResource SurfaceHoverBrush}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.Resources>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid Width="40" Height="40" Margin="0,0,10,0">
+                                                <Ellipse Width="40" Height="40"
+                                                         Fill="{DynamicResource SurfaceHoverBrush}"/>
+                                                <TextBlock Text="{Binding Title, Converter={StaticResource InitialLetterConverter}}"
+                                                           FontSize="14" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource MutedBrush}"
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                <Image Width="40" Height="40" Stretch="UniformToFill"
+                                                       Source="{Binding AvatarUrl, Converter={StaticResource AvatarImageSourceConverter}}">
+                                                    <Image.Clip>
+                                                        <EllipseGeometry Center="20,20" RadiusX="20" RadiusY="20"/>
+                                                    </Image.Clip>
+                                                </Image>
+                                                <Ellipse Width="11" Height="11"
+                                                         Fill="{DynamicResource OnlineBrush}"
+                                                         Stroke="{DynamicResource SurfaceBrush}"
+                                                         StrokeThickness="2"
+                                                         HorizontalAlignment="Right"
+                                                         VerticalAlignment="Bottom"
+                                                         Visibility="{Binding PeerOnline, Converter={StaticResource BoolToVis}}"/>
+                                            </Grid>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Title}" FontSize="13"
+                                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                                           Foreground="{DynamicResource TextBrush}"/>
+                                                <TextBlock Text="{Binding PreviewLine}" FontSize="12"
+                                                           TextTrimming="CharacterEllipsis" Margin="0,2,0,0">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding PeerTyping}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                                                    <Setter Property="FontStyle" Value="Italic"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+
+                        <Border Grid.Column="1" Background="{DynamicResource BorderBrush}"/>
+
+                        <Grid Grid.Column="2">
+                            <!-- Заглушка, когда чат не выбран -->
+                            <StackPanel x:Name="NoChatSelected" HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" Margin="30">
+                                <Border Width="52" Height="52" CornerRadius="12"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets" FontSize="20"
+                                               Foreground="{DynamicResource MutedBrush}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock x:Name="EmptyStateTitle" Text="No chats yet" FontSize="21"
+                                           FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}"
+                                           TextAlignment="Center" Margin="0,18,0,0"/>
+                                <TextBlock x:Name="EmptyStateText"
+                                           Text="Start a conversation with a friend by username."
+                                           FontSize="14" Foreground="{DynamicResource MutedBrush}"
+                                           TextAlignment="Center" TextWrapping="Wrap"
+                                           MaxWidth="320" Margin="0,8,0,0"/>
+                                <Button x:Name="EmptyNewChatButton" Style="{StaticResource SecondaryButton}"
+                                        Content="New chat" HorizontalAlignment="Center" Margin="0,18,0,0"
+                                        Click="NewChatButton_Click"/>
+                            </StackPanel>
+
+                            <!-- Переписка -->
+                            <Grid x:Name="ThreadPanel" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0" Padding="22,15"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="0,0,0,1">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Grid Width="44" Height="44" VerticalAlignment="Center"
+                                              MouseLeftButtonDown="ThreadAvatar_MouseLeftButtonDown">
+                                            <Ellipse x:Name="ThreadAvatar" Width="44" Height="44"
+                                                     Fill="{DynamicResource SurfaceHoverBrush}"/>
+                                            <TextBlock x:Name="ThreadAvatarInitial" FontSize="18" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource MutedBrush}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            <Ellipse x:Name="ThreadOnlineDot" Width="12" Height="12"
+                                                     Fill="{DynamicResource OnlineBrush}"
+                                                     Stroke="{DynamicResource BgBrush}"
+                                                     StrokeThickness="2"
+                                                     HorizontalAlignment="Right"
+                                                     VerticalAlignment="Bottom"
+                                                     Visibility="Collapsed"/>
+                                        </Grid>
+                                        <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                                            <TextBlock x:Name="ThreadTitle" FontSize="17" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextBrush}"
+                                                      TextTrimming="CharacterEllipsis"
+                                                      MouseLeftButtonDown="ThreadTitle_MouseLeftButtonDown"/>
+                                            <TextBlock x:Name="ChatStatusText"
+                                                      Text=""
+                                                      FontSize="12" Margin="0,2,0,0"
+                                                      Foreground="{DynamicResource MutedBrush}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <ScrollViewer x:Name="MessagesScroll" Grid.Row="1"
+                                              VerticalScrollBarVisibility="Auto"
+                                              Padding="22,16">
+                                    <StackPanel x:Name="MessagesPanel"/>
+                                </ScrollViewer>
+
+                                <Border Grid.Row="2" Padding="16,12"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="0,1,0,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="MessageBox" Style="{StaticResource Field}"
+                                                 MaxLength="4000" KeyDown="MessageBox_KeyDown"
+                                                 TextChanged="MessageBox_TextChanged"
+                                                 ToolTip="Enter — send, Shift+Enter — new line"/>
+                                        <Button x:Name="SendButton" Grid.Column="1"
+                                                Style="{StaticResource PrimaryButton}"
+                                                Content="Send" Margin="10,0,0,0"
+                                                Click="SendButton_Click"/>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Grid>
+
+                        <!-- Окно нового чата -->
+                        <Grid x:Name="NewChatPanel" Grid.ColumnSpan="3" Background="#80000000"
+                              Visibility="Collapsed">
+                            <Border Width="370" Padding="22" CornerRadius="10"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    Background="{DynamicResource BgBrush}"
                                     BorderBrush="{DynamicResource BorderBrush}"
-                                    BorderThickness="1" HorizontalAlignment="Center">
-                                <TextBlock Text="&#xE8BD;" FontFamily="Segoe MDL2 Assets" FontSize="20"
-                                           Foreground="{DynamicResource MutedBrush}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    BorderThickness="1">
+                                <StackPanel>
+                                    <TextBlock Text="New chat" FontSize="20" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextBrush}"/>
+                                    <TextBlock Text="Enter your friend's GoPing username. Messages are private between you two."
+                                               FontSize="13" Foreground="{DynamicResource MutedBrush}"
+                                               TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    <TextBlock Text="Username" Style="{StaticResource FieldLabel}"
+                                               Margin="0,18,0,6"/>
+                                    <TextBox x:Name="NewChatUsernameBox" Style="{StaticResource Field}"
+                                             MaxLength="32" KeyDown="NewChatUsernameBox_KeyDown"/>
+                                    <TextBlock x:Name="NewChatStatusText" MinHeight="18" FontSize="12"
+                                               Foreground="{DynamicResource MutedBrush}"
+                                               TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                Margin="0,10,0,0">
+                                        <Button x:Name="NewChatCancelButton"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Content="Cancel" Click="NewChatCancelButton_Click"/>
+                                        <Button x:Name="NewChatCreateButton"
+                                                Style="{StaticResource PrimaryButton}"
+                                                Content="Create" Margin="10,0,0,0"
+                                                Click="NewChatCreateButton_Click"/>
+                                    </StackPanel>
+                                </StackPanel>
                             </Border>
-                            <TextBlock Text="No chats yet" FontSize="21" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource TextBrush}" TextAlignment="Center"
-                                       Margin="0,18,0,0"/>
-                            <TextBlock Text="Your local messenger is ready. Chats will appear here."
-                                       FontSize="14" Foreground="{DynamicResource MutedBrush}"
-                                       TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                        </StackPanel>
+                        </Grid>
                     </Grid>
 
                     <Grid x:Name="ProfilePanel" Background="{DynamicResource BgBrush}" Visibility="Collapsed">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel MaxWidth="460" HorizontalAlignment="Left" Margin="40,34,40,40">
-                                <TextBlock Text="Edit profile" FontSize="23" FontWeight="SemiBold"
+                                <TextBlock x:Name="ProfileHeadingText" Text="Edit profile" FontSize="23" FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}"/>
-                                <TextBlock Text="Changes are saved to your GoPing server."
+                                <TextBlock x:Name="ProfileSubtitleText"
+                                           Text="Changes are saved to your GoPing server."
                                            FontSize="13" Foreground="{DynamicResource MutedBrush}"
                                            Margin="0,6,0,0"/>
 
@@ -123,6 +342,13 @@
                                         <TextBlock x:Name="ProfileAvatarInitial" FontSize="24" FontWeight="SemiBold"
                                                    Foreground="{DynamicResource MutedBrush}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        <Ellipse x:Name="ProfileOnlineDot" Width="14" Height="14"
+                                                 Fill="{DynamicResource OnlineBrush}"
+                                                 Stroke="{DynamicResource BgBrush}"
+                                                 StrokeThickness="2"
+                                                 HorizontalAlignment="Right"
+                                                 VerticalAlignment="Bottom"
+                                                 Visibility="Collapsed"/>
                                     </Grid>
                                     <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
                                         <Button x:Name="UploadAvatarButton" Style="{StaticResource SecondaryButton}"
@@ -134,26 +360,44 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <TextBlock Text="Nickname" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
+                                <TextBlock x:Name="PeerNicknameText" FontSize="20" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" TextWrapping="Wrap"
+                                           Visibility="Collapsed" Margin="0,22,0,0"/>
+                                <TextBlock x:Name="PeerUsernameText" FontSize="13"
+                                           Foreground="{DynamicResource MutedBrush}" Margin="0,4,0,0"
+                                           Visibility="Collapsed"/>
+                                <TextBlock x:Name="PeerPresenceText" FontSize="13"
+                                           Foreground="{DynamicResource MutedBrush}" Margin="0,8,0,0"
+                                           Visibility="Collapsed"/>
+                                <TextBlock x:Name="PeerBioText" FontSize="14" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextBrush}" Visibility="Collapsed"
+                                           Margin="0,16,0,0"/>
+
+                                <TextBlock x:Name="NicknameLabel" Text="Nickname" Style="{StaticResource FieldLabel}" Margin="0,26,0,6"/>
                                 <TextBox x:Name="NicknameBox" Style="{StaticResource Field}" MaxLength="50"/>
 
-                                <TextBlock Text="Username" Style="{StaticResource FieldLabel}" Margin="0,18,0,6"/>
+                                <TextBlock x:Name="UsernameLabel" Text="Username" Style="{StaticResource FieldLabel}" Margin="0,18,0,6"/>
                                 <TextBox x:Name="UsernameBox" Style="{StaticResource Field}" MaxLength="32"/>
-                                <TextBlock Text="3–32 characters: latin letters, digits and _"
+                                <TextBlock x:Name="UsernameHintText" Text="3–32 characters: latin letters, digits and _"
                                            FontSize="12" Foreground="{DynamicResource FaintBrush}"
                                            Margin="0,6,0,0"/>
 
-                                <TextBlock Text="Bio" Style="{StaticResource FieldLabel}" Margin="0,18,0,6"/>
+                                <TextBlock x:Name="BioLabel" Text="Bio" Style="{StaticResource FieldLabel}" Margin="0,18,0,6"/>
                                 <TextBox x:Name="BioBox" Style="{StaticResource Field}" Height="92"
                                          AcceptsReturn="True" TextWrapping="Wrap" MaxLength="300"
                                          VerticalContentAlignment="Top" Padding="10,9"/>
 
-                                <StackPanel Orientation="Horizontal" Margin="0,24,0,0">
+                                <StackPanel x:Name="OwnProfileActions" Orientation="Horizontal" Margin="0,24,0,0">
                                     <Button x:Name="SaveButton" Style="{StaticResource PrimaryButton}"
                                             Content="Save changes" Click="SaveButton_Click"/>
                                     <Button x:Name="CancelButton" Style="{StaticResource SecondaryButton}"
                                             Content="Cancel" Margin="10,0,0,0" Click="CancelButton_Click"/>
                                 </StackPanel>
+
+                                <Button x:Name="PeerCloseButton" Style="{StaticResource SecondaryButton}"
+                                        Content="Close" Margin="0,22,0,0" Visibility="Collapsed"
+                                        Click="PeerCloseButton_Click"/>
+
                                 <Button x:Name="SignOutButton" Style="{StaticResource GhostButton}"
                                         Content="Sign out" Margin="0,14,0,0" HorizontalAlignment="Left"
                                         Click="SignOutButton_Click"/>

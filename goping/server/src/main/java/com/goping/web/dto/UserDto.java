@@ -12,6 +12,8 @@ public record UserDto(
         String bio,
         String avatarUrl,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        boolean online,
+        Instant lastSeenAt
 ) {
 }

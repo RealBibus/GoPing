@@ -83,6 +83,24 @@ public final class Validation {
         return Checked.ok(nickname);
     }
 
+    public static Checked message(String raw) {
+        String text = raw == null ? "" : raw.strip();
+        if (text.isEmpty()) {
+            return Checked.fail(text, "сообщение не может быть пустым");
+        }
+        if (text.codePointCount(0, text.length()) > 4000) {
+            return Checked.fail(text, "сообщение должно быть не длиннее 4000 символов");
+        }
+        for (int i = 0; i < text.length(); ) {
+            int codePoint = text.codePointAt(i);
+            if (Character.isISOControl(codePoint) && codePoint != '\n' && codePoint != '\t') {
+                return Checked.fail(text, "сообщение содержит недопустимые символы");
+            }
+            i += Character.charCount(codePoint);
+        }
+        return Checked.ok(text);
+    }
+
     public static Checked bio(String raw) {
         String bio = raw == null ? "" : raw.trim();
         if (bio.codePointCount(0, bio.length()) > 300) {

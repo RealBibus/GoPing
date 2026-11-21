@@ -4,7 +4,9 @@
 
 GoPing is a small local messenger: a desktop client on Windows (WPF) and a REST
 API server (Spring Boot + SQLite). You and your friends run it on your own
-machine(s); you talk to each other over the local network.
+machine(s); you talk to each other over the local network. Messages are stored
+encrypted with the Russian standard **GOST R 34.12-2015 "Kuznyechik"** in CTR
+mode (GOST R 34.13-2015) plus HMAC-SHA256 integrity protection.
 
 ## Login
 

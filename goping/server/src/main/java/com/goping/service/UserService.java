@@ -40,6 +40,13 @@ public class UserService {
         return users.findById(userId).orElseThrow(ApiException::notFound);
     }
 
+    /** Публичный профиль пользователя по username. */
+    public User getByUsername(String rawUsername) {
+        String username = Validation.normalizeUsername(rawUsername);
+        return users.findByUsername(username).orElseThrow(() -> new ApiException(
+                HttpStatus.NOT_FOUND, "NOT_FOUND", "Пользователь не найден"));
+    }
+
     public User updateProfile(UUID userId, UpdateProfileInput input) {
         if (input.nickname() == null && input.username() == null && input.bio() == null) {
             throw new ValidationException(Map.of("body", "нет полей для обновления"));

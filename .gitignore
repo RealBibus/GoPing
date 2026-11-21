@@ -399,3 +399,22 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# GoPing: локальные секреты, сессии и базы данных
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+session.dat
+*.token
+tokens.json
+crash.log
+data/
+
+# GoPing: артефакты сборки (.NET и Maven)
+**/bin/
+**/obj/
+**/target/
+publish/

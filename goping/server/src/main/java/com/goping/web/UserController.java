@@ -98,4 +98,11 @@ public class UserController {
         User user = users.get(targetId);
         return new ApiDtos.UserEnvelope(mapper.user(user));
     }
+
+    /** Профиль пользователя по username (используется в личных чатах). */
+    @GetMapping("/username/{username}")
+    public ApiDtos.UserEnvelope getByUsername(@PathVariable String username) {
+        User user = users.getByUsername(username);
+        return new ApiDtos.UserEnvelope(mapper.user(user));
+    }
 }

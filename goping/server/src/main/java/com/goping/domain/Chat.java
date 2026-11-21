@@ -5,12 +5,17 @@ import java.util.UUID;
 
 /**
  * Минимальное представление чата.
- * Сейчас чатов нет: GET /api/v1/chats отдаёт пустой список, клиент показывает заглушку.
+ * Для личных чатов заголовок и аватар собеседника вычисляются из
+ * chat_members, поэтому остаются актуальными после смены профиля.
  */
 public record Chat(
         UUID id,
         String kind,
         String title,
-        Instant createdAt
+        String username,
+        String avatarPath,
+        String avatarUrl,
+        Instant createdAt,
+        UUID peerUserId
 ) {
 }
