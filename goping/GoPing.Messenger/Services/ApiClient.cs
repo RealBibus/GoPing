@@ -24,6 +24,23 @@ public sealed class ApiClient : IDisposable
     public string BaseUrl { get; }
     public string? RefreshToken => _refreshToken;
 
+    /// <summary>Returns a current access token, refreshing it when needed.</summary>
+    public async Task<string> GetAccessTokenAsync(CancellationToken ct = default)
+    {
+        await EnsureFreshTokenAsync(ct);
+        return _accessToken
+            ?? throw new ApiException("NO_ACCESS_TOKEN", "Sign in again to continue synchronization.");
+    }
+
+    /// <summary>Builds the authenticated WebSocket endpoint from the configured API URL.</summary>
+    public Uri BuildWebSocketUri(string accessToken)
+    {
+        Uri baseUri = new(BaseUrl);
+        string scheme = baseUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws";
+        string authority = baseUri.GetComponents(UriComponents.HostAndPort, UriFormat.Unescaped);
+        return new Uri($"{scheme}://{authority}/api/v1/ws?token={Uri.EscapeDataString(accessToken)}");
+    }
+
     public ApiClient(string? baseUrl = null)
     {
         string? configured = baseUrl ?? Environment.GetEnvironmentVariable("GOPING_API_URL");
@@ -157,15 +174,29 @@ public sealed class ApiClient : IDisposable
     public Task HeartbeatAsync(CancellationToken ct = default)
         => SendAuthenticatedEmptyAsync(HttpMethod.Post, "api/v1/presence/heartbeat", null, ct);
 
-    public Task NotifyTypingAsync(string chatId, CancellationToken ct = default)
+    public Task MarkReadAsync(string chatId, CancellationToken ct = default)
         => SendAuthenticatedEmptyAsync(
             HttpMethod.Post,
-            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/typing",
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/read",
             null,
             ct);
 
     public Task<ChatListResponse> GetChatsAsync(CancellationToken ct = default)
         => SendAuthenticatedAsync<ChatListResponse>(HttpMethod.Get, "api/v1/chats?limit=30", null, ct);
+
+    public async Task<ClientConfig> GetClientConfigAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            return await SendAuthenticatedAsync<ClientConfig>(
+                HttpMethod.Get, "api/v1/client-config", null, ct);
+        }
+        catch (ApiException)
+        {
+            // Старый сервер не знает этот endpoint — разрешаем удаление по умолчанию.
+            return new ClientConfig(true);
+        }
+    }
 
     /// <summary>Профиль пользователя по username (для личных чатов). </summary>
     public async Task<UserProfile> GetUserByUsernameAsync(string username, CancellationToken ct = default)
@@ -193,14 +224,43 @@ public sealed class ApiClient : IDisposable
             null,
             ct);
 
-    /// <summary>Отправляет сообщение; сервер шифрует его ГОСТ 34.12-2015.</summary>
+    /// <summary>Sends a message; the server protects it before storing it.</summary>
     public Task<ChatMessage> SendMessageAsync(
-        string chatId, string text, CancellationToken ct = default)
+        string chatId, string text, string? replyToId = null, CancellationToken ct = default)
         => SendAuthenticatedAsync<ChatMessage>(
             HttpMethod.Post,
             "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages",
-            JsonContent.Create(new { text }, options: JsonOptions),
+            JsonContent.Create(new { text, replyToId }, options: JsonOptions),
             ct);
+
+    public Task DeleteMessageAsync(
+        string chatId, string messageId, bool forEveryone, CancellationToken ct = default)
+        => SendAuthenticatedEmptyAsync(
+            HttpMethod.Delete,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId)
+                + "/messages/" + Uri.EscapeDataString(messageId),
+            JsonContent.Create(new { forEveryone }, options: JsonOptions),
+            ct);
+
+    public Task PinMessageAsync(
+        string chatId, string messageId, string scope, CancellationToken ct = default)
+        => SendAuthenticatedEmptyAsync(
+            HttpMethod.Post,
+            PinPath(chatId, messageId),
+            JsonContent.Create(new { scope }, options: JsonOptions),
+            ct);
+
+    public Task UnpinMessageAsync(
+        string chatId, string messageId, string scope, CancellationToken ct = default)
+        => SendAuthenticatedEmptyAsync(
+            HttpMethod.Delete,
+            PinPath(chatId, messageId),
+            JsonContent.Create(new { scope }, options: JsonOptions),
+            ct);
+
+    private static string PinPath(string chatId, string messageId)
+        => "api/v1/chats/" + Uri.EscapeDataString(chatId)
+            + "/messages/" + Uri.EscapeDataString(messageId) + "/pin";
 
     private async Task EnsureFreshTokenAsync(CancellationToken ct)
     {

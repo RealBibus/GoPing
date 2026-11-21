@@ -119,6 +119,38 @@ public class ChatController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/{chatId}/messages/{messageId}/pin")
+    public ResponseEntity<Void> pin(
+            @PathVariable String chatId,
+            @PathVariable String messageId,
+            @RequestBody(required = false) ApiDtos.PinRequest body,
+            HttpServletRequest request) {
+        String scope = body == null ? null : body.scope();
+        UUID chat = parseChatId(chatId);
+        UUID msg = parseId(messageId, "сообщения");
+        MessageService.PinResult result = messages.setPin(
+                RequestContext.userId(request), chat, msg, scope, true);
+        realtime.messagePinned(chat, result.messageId(), result.scope(),
+                result.actorId(), result.pinned());
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{chatId}/messages/{messageId}/pin")
+    public ResponseEntity<Void> unpin(
+            @PathVariable String chatId,
+            @PathVariable String messageId,
+            @RequestBody(required = false) ApiDtos.PinRequest body,
+            HttpServletRequest request) {
+        String scope = body == null ? null : body.scope();
+        UUID chat = parseChatId(chatId);
+        UUID msg = parseId(messageId, "сообщения");
+        MessageService.PinResult result = messages.setPin(
+                RequestContext.userId(request), chat, msg, scope, false);
+        realtime.messagePinned(chat, result.messageId(), result.scope(),
+                result.actorId(), result.pinned());
+        return ResponseEntity.noContent().build();
+    }
+
     private static UUID parseChatId(String raw) {
         return parseId(raw, "чата");
     }

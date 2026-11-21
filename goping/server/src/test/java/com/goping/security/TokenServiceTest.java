@@ -85,6 +85,7 @@ class TokenServiceTest {
                 120,
                 List.of("*"),
                 false,
+                true,
                 "",
                 "",
                 "",

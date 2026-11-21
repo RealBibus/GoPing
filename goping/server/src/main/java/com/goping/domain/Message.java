@@ -21,6 +21,7 @@ public record Message(
         UUID replyToId,
         String replyToText,
         String replyToSenderNickname,
-        String deliveryStatus
+        String deliveryStatus,
+        String pinScope
 ) {
 }

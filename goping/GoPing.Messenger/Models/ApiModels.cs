@@ -47,9 +47,7 @@ public sealed record ChatSummary(
     bool PeerTyping = false)
 {
     public string PreviewLine =>
-        PeerTyping
-            ? "typing…"
-            : (string.IsNullOrWhiteSpace(LastMessageText) ? "No messages yet" : LastMessageText!);
+        string.IsNullOrWhiteSpace(LastMessageText) ? "No messages yet" : LastMessageText!;
 }
 
 public sealed record ChatListResponse(
@@ -62,17 +60,27 @@ public sealed record ChatMessageSender(
     string Nickname,
     string? AvatarUrl = null);
 
+public sealed record ReplyPreview(
+    string Id,
+    string Text,
+    string SenderNickname);
+
 public sealed record ChatMessage(
     string Id,
     string ChatId,
     ChatMessageSender Sender,
     string Text,
     string Algorithm,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    ReplyPreview? ReplyTo = null,
+    string? Status = null,
+    string? PinScope = null);
 
 public sealed record MessageListResponse(
     IReadOnlyList<ChatMessage> Items,
     string? NextCursor);
+
+public sealed record ClientConfig(bool AllowDeleteOthersMessages);
 
 public sealed record ApiErrorEnvelope(ApiError Error);
 

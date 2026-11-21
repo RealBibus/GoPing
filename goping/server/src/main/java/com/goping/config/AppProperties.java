@@ -22,6 +22,7 @@ public record AppProperties(
         int availabilityRateLimit,
         List<String> corsOrigins,
         boolean autoMigrate,
+        Boolean allowDeleteOthersMessages,
         String adminSecret,
         String messageKey,
         String githubClientId,
@@ -67,6 +68,9 @@ public record AppProperties(
         }
         if (corsOrigins == null || corsOrigins.isEmpty()) {
             corsOrigins = List.of("*");
+        }
+        if (allowDeleteOthersMessages == null) {
+            allowDeleteOthersMessages = true;
         }
         adminSecret = adminSecret == null ? "" : adminSecret.trim();
         messageKey = messageKey == null ? "" : messageKey.trim();

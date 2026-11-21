@@ -1,6 +1,7 @@
 package com.goping;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.goping.config.DeletePolicy;
 import com.goping.github.GitHubClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -8,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -21,13 +23,21 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.WebSocketHandler;
+import org.springframework.web.socket.WebSocketHttpHeaders;
+import org.springframework.web.socket.WebSocketMessage;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -48,11 +58,17 @@ class ApiIntegrationTest {
     @Autowired
     private TestRestTemplate rest;
 
+    @LocalServerPort
+    private int port;
+
     @MockBean
     private GitHubClient githubClient;
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private DeletePolicy deletePolicy;
 
     @BeforeEach
     void useJdkHttpClient() {
@@ -665,5 +681,225 @@ class ApiIntegrationTest {
                 "/api/v1/chats/not-a-uuid/messages", alice.accessToken(), null);
         assertThat(badId.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(badId.getBody().get("error").get("code").asText()).isEqualTo("INVALID_ID");
+    }
+
+    @Test
+    void replyAndDeleteForEveryoneWorkForBothMembers() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        JsonNode original = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(),
+                "{\"text\":\"original\"}").getBody();
+        String originalId = original.get("id").asText();
+
+        ResponseEntity<JsonNode> replyResponse = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", bob.accessToken(),
+                "{\"text\":\"reply\",\"replyToId\":\"" + originalId + "\"}");
+        assertThat(replyResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        JsonNode reply = replyResponse.getBody();
+        assertThat(reply.get("replyTo").get("id").asText()).isEqualTo(originalId);
+        assertThat(reply.get("replyTo").get("text").asText()).isEqualTo("original");
+        assertThat(reply.get("replyTo").get("senderNickname").asText()).isEqualTo(alice.nickname());
+
+        JsonNode aliceItems = authed(HttpMethod.GET,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(), null)
+                .getBody().get("items");
+        assertThat(aliceItems.size()).isEqualTo(2);
+        assertThat(aliceItems.get(1).get("replyTo").get("id").asText()).isEqualTo(originalId);
+
+        ResponseEntity<JsonNode> deleted = authed(HttpMethod.DELETE,
+                "/api/v1/chats/" + chatId + "/messages/" + originalId,
+                bob.accessToken(), "{\"forEveryone\":true}");
+        assertThat(deleted.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        JsonNode after = authed(HttpMethod.GET,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(), null)
+                .getBody().get("items");
+        assertThat(after.size()).isEqualTo(1);
+        assertThat(after.get(0).get("id").asText()).isEqualTo(reply.get("id").asText());
+        assertThat(after.get(0).get("replyTo").isNull()).isTrue();
+    }
+
+    @Test
+    void deleteForMeHidesMessageOnlyForOneMember() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        JsonNode sent = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/messages", alice.accessToken(),
+                "{\"text\":\"private deletion\"}").getBody();
+        String messageId = sent.get("id").asText();
+
+        ResponseEntity<JsonNode> deleted = authed(HttpMethod.DELETE,
+                "/api/v1/chats/" + chatId + "/messages/" + messageId,
+                bob.accessToken(), "{\"forEveryone\":false}");
+        assertThat(deleted.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        assertThat(authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                bob.accessToken(), null).getBody().get("items").size()).isZero();
+        assertThat(authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), null).getBody().get("items").size()).isEqualTo(1);
+    }
+
+    @Test
+    void readReceiptChangesStatusOnlyForTheSender() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), "{\"text\":\"read me\"}");
+
+        JsonNode before = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), null).getBody().get("items");
+        assertThat(before.get(0).get("status").asText()).isEqualTo("sent");
+
+        ResponseEntity<JsonNode> read = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/read", bob.accessToken(), null);
+        assertThat(read.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        JsonNode after = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), null).getBody().get("items");
+        assertThat(after.get(0).get("status").asText()).isEqualTo("read");
+    }
+
+    @Test
+    void websocketHandshakeRequiresValidAccessToken() throws Exception {
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        WebSocketHandler noop = new WebSocketHandler() {
+            @Override
+            public void afterConnectionEstablished(WebSocketSession session) {
+            }
+
+            @Override
+            public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) {
+            }
+
+            @Override
+            public void handleTransportError(WebSocketSession session, Throwable exception) {
+            }
+
+            @Override
+            public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) {
+            }
+
+            @Override
+            public boolean supportsPartialMessages() {
+                return false;
+            }
+        };
+
+        boolean anonymousRejected = false;
+        try {
+            client.doHandshake(noop, (WebSocketHttpHeaders) null,
+                            new URI("ws://localhost:" + port + "/api/v1/ws"))
+                    .get(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            anonymousRejected = true;
+        }
+        assertThat(anonymousRejected).isTrue();
+
+        AuthData auth = tokenLogin(issueToken());
+        URI uri = new URI("ws://localhost:" + port + "/api/v1/ws?token=" + auth.accessToken());
+        try (WebSocketSession session = client.doHandshake(noop, (WebSocketHttpHeaders) null, uri)
+                .get(5, TimeUnit.SECONDS)) {
+            assertThat(session.isOpen()).isTrue();
+        }
+    }
+
+    @Test
+    void clientConfigExposesDeleteOthersFlag() {
+        AuthData auth = tokenLogin(issueToken());
+        JsonNode config = authed(HttpMethod.GET, "/api/v1/client-config",
+                auth.accessToken(), null).getBody();
+        assertThat(config.get("allowDeleteOthersMessages").asBoolean()).isTrue();
+
+        deletePolicy.setAllowDeleteOthers(false);
+        try {
+            config = authed(HttpMethod.GET, "/api/v1/client-config",
+                    auth.accessToken(), null).getBody();
+            assertThat(config.get("allowDeleteOthersMessages").asBoolean()).isFalse();
+        } finally {
+            deletePolicy.setAllowDeleteOthers(true);
+        }
+    }
+
+    @Test
+    void deletingOthersMessagesCanBeDisabledOnServer() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+        String messageId = authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), "{\"text\":\"do not delete me\"}").getBody().get("id").asText();
+
+        deletePolicy.setAllowDeleteOthers(false);
+        try {
+            ResponseEntity<JsonNode> hide = authed(HttpMethod.DELETE,
+                    "/api/v1/chats/" + chatId + "/messages/" + messageId,
+                    bob.accessToken(), "{\"forEveryone\":false}");
+            assertThat(hide.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(hide.getBody().get("error").get("code").asText())
+                    .isEqualTo("DELETE_OTHERS_DISABLED");
+
+            ResponseEntity<JsonNode> purge = authed(HttpMethod.DELETE,
+                    "/api/v1/chats/" + chatId + "/messages/" + messageId,
+                    bob.accessToken(), "{\"forEveryone\":true}");
+            assertThat(purge.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        } finally {
+            deletePolicy.setAllowDeleteOthers(true);
+        }
+
+        JsonNode items = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), null).getBody().get("items");
+        assertThat(items.size()).isEqualTo(1);
+        assertThat(items.get(0).get("id").asText()).isEqualTo(messageId);
+    }
+
+    @Test
+    void messagePinsSupportPrivateAndChatScopes() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+        String messageId = authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), "{\"text\":\"pin me\"}").getBody().get("id").asText();
+        String pinPath = "/api/v1/chats/" + chatId + "/messages/" + messageId + "/pin";
+
+        assertThat(authed(HttpMethod.POST, pinPath, alice.accessToken(),
+                "{\"scope\":\"me\"}").getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(pinScopeOf(alice, chatId)).isEqualTo("me");
+        assertThat(pinScopeOf(bob, chatId)).isNull();
+
+        assertThat(authed(HttpMethod.POST, pinPath, alice.accessToken(),
+                "{\"scope\":\"chat\"}").getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(pinScopeOf(alice, chatId)).isEqualTo("chat");
+        assertThat(pinScopeOf(bob, chatId)).isEqualTo("chat");
+
+        // Общий пин может снять любой участник чата.
+        assertThat(authed(HttpMethod.DELETE, pinPath, bob.accessToken(),
+                "{\"scope\":\"chat\"}").getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        // У Алисы остаётся её личный пин, у Боба пинов больше нет.
+        assertThat(pinScopeOf(alice, chatId)).isEqualTo("me");
+        assertThat(pinScopeOf(bob, chatId)).isNull();
+
+        assertThat(authed(HttpMethod.DELETE, pinPath, alice.accessToken(),
+                "{\"scope\":\"me\"}").getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(pinScopeOf(alice, chatId)).isNull();
+        assertThat(pinScopeOf(bob, chatId)).isNull();
+
+        ResponseEntity<JsonNode> invalid = authed(HttpMethod.POST, pinPath, alice.accessToken(),
+                "{\"scope\":\"everyone\"}");
+        assertThat(invalid.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(invalid.getBody().get("error").get("code").asText())
+                .isEqualTo("INVALID_PIN_SCOPE");
+    }
+
+    private String pinScopeOf(AuthData auth, String chatId) {
+        JsonNode items = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                auth.accessToken(), null).getBody().get("items");
+        JsonNode scope = items.get(0).get("pinScope");
+        return scope == null || scope.isNull() ? null : scope.asText();
     }
 }

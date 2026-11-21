@@ -86,6 +86,7 @@ java -jar target\goping-server-1.0.0.jar
 | `AUTH_RATE_LIMIT` | `30` | Запросов в минуту на `/auth/*` с одного IP |
 | `AVAILABILITY_RATE_LIMIT` | `120` | Запросов в минуту на проверку username |
 | `AUTO_MIGRATE` | `true` | Применять SQL-миграции при старте |
+| `ALLOW_DELETE_OTHERS_MESSAGES` | `true` | Разрешить удалять чужие сообщения (для себя и для всех) |
 
 `JWT_SECRET` короче 32 символов — приложение не стартует (это защита от
 случайного дефолтного секрета в проде).

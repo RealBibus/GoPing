@@ -93,7 +93,8 @@ public class DtoMapper {
                 message.algorithm(),
                 message.createdAt(),
                 reply,
-                message.deliveryStatus()
+                message.deliveryStatus(),
+                message.pinScope()
         );
     }
 }

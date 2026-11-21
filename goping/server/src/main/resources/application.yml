@@ -37,6 +37,9 @@ app:
   cors-origins: ${CORS_ORIGINS:*}
   auto-migrate: ${AUTO_MIGRATE:true}
 
+  # Разрешить участникам чата удалять чужие сообщения (по умолчанию включено).
+  allow-delete-others-messages: ${ALLOW_DELETE_OTHERS_MESSAGES:true}
+
   # Секрет для выдачи серверных токенов. Пусто — админ-API выключен.
   admin-secret: ${ADMIN_SECRET:}
 

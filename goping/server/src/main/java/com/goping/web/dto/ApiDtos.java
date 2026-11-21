@@ -88,6 +88,13 @@ public final class ApiDtos {
     public record DeleteMessageRequest(boolean forEveryone) {
     }
 
+    /** scope: 'me' или 'chat'. */
+    public record PinRequest(String scope) {
+    }
+
+    public record ClientConfigDto(boolean allowDeleteOthersMessages) {
+    }
+
     public record MessageSenderDto(String id, String username, String nickname, String avatarUrl) {
     }
 
@@ -102,7 +109,8 @@ public final class ApiDtos {
             String algorithm,
             Instant createdAt,
             ReplyPreviewDto replyTo,
-            String status
+            String status,
+            String pinScope
     ) {
     }
 

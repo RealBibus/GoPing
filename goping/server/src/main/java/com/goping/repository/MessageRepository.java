@@ -5,7 +5,9 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -155,6 +157,7 @@ public class MessageRepository {
 
     public void delete(UUID messageId) {
         jdbc.update("DELETE FROM message_hides WHERE message_id = ?", messageId.toString());
+        jdbc.update("DELETE FROM message_pins WHERE message_id = ?", messageId.toString());
         jdbc.update("UPDATE messages SET reply_to_id = NULL WHERE reply_to_id = ?", messageId.toString());
         jdbc.update("DELETE FROM messages WHERE id = ?", messageId.toString());
     }
@@ -192,5 +195,53 @@ public class MessageRepository {
                 (rs, rowNum) -> Instant.ofEpochMilli(rs.getLong("last_read_at")),
                 chatId.toString(), viewerId.toString());
         return rows.stream().findFirst();
+    }
+
+    public void pin(UUID userId, UUID messageId, String scope, Instant at) {
+        jdbc.update("""
+                        INSERT OR IGNORE INTO message_pins (message_id, user_id, scope, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                messageId.toString(), userId.toString(), scope, at.toEpochMilli());
+    }
+
+    public void unpin(UUID userId, UUID messageId, String scope) {
+        if ("chat".equals(scope)) {
+            // Общий пин может снять любой участник чата.
+            jdbc.update("DELETE FROM message_pins WHERE message_id = ? AND scope = 'chat'",
+                    messageId.toString());
+        } else {
+            jdbc.update("""
+                            DELETE FROM message_pins
+                            WHERE message_id = ? AND user_id = ? AND scope = 'me'
+                            """,
+                    messageId.toString(), userId.toString());
+        }
+    }
+
+    /** Видимые зрителю пины: 'chat' имеет приоритет над личным 'me'. */
+    public Map<UUID, String> pinScopes(UUID chatId, UUID viewerId) {
+        Map<UUID, String> result = new HashMap<>();
+        jdbc.query("""
+                        SELECT message_id, weight
+                        FROM (
+                            SELECT p.message_id AS message_id,
+                                   MAX(CASE WHEN p.scope = 'chat' THEN 2
+                                            WHEN p.scope = 'me' AND p.user_id = ? THEN 1
+                                            ELSE 0 END) AS weight
+                            FROM message_pins p
+                            JOIN messages m ON m.id = p.message_id
+                            WHERE m.chat_id = ?
+                            GROUP BY p.message_id
+                        )
+                        WHERE weight > 0
+                        """,
+                rs -> {
+                    result.put(
+                            UUID.fromString(rs.getString("message_id")),
+                            rs.getInt("weight") == 2 ? "chat" : "me");
+                },
+                viewerId.toString(), chatId.toString());
+        return result;
     }
 }

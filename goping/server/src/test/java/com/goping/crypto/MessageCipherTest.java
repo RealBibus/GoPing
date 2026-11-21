@@ -27,6 +27,7 @@ class MessageCipherTest {
                 120,
                 List.of("*"),
                 true,
+                true,
                 "",
                 messageKey,
                 "",

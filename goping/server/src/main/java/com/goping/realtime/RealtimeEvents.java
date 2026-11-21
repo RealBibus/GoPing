@@ -53,6 +53,22 @@ public class RealtimeEvents {
         }
     }
 
+    public void messagePinned(UUID chatId, UUID messageId, String scope, UUID actorId, boolean pinned) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "message.pinned");
+        event.put("chatId", chatId.toString());
+        event.put("messageId", messageId.toString());
+        event.put("scope", scope);
+        event.put("actorId", actorId.toString());
+        event.put("pinned", pinned);
+
+        if ("me".equals(scope)) {
+            hub.sendToUser(actorId, event);
+        } else {
+            hub.sendToChat(chatId, event);
+        }
+    }
+
     public void chatCreated(UUID chatId) {
         pushChatUpdated(chatId);
     }
