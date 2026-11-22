@@ -493,15 +493,50 @@ class ApiIntegrationTest {
     }
 
     @Test
-    void chatsReturnEmptyStub() {
+    void chatsReturnFavoritesChat() {
         AuthData auth = tokenLogin(issueToken());
 
         ResponseEntity<JsonNode> response = authed(HttpMethod.GET, "/api/v1/chats", auth.accessToken(), null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody().get("items").isArray()).isTrue();
-        assertThat(response.getBody().get("items").size()).isZero();
+        assertThat(response.getBody().get("items").size()).isEqualTo(1);
+        JsonNode favorites = chatOfKind(response.getBody().get("items"), "favorites");
+        assertThat(favorites.get("title").asText()).isEqualTo("Favorites");
+        assertThat(favorites.get("peerUserId").isNull()).isTrue();
         assertThat(response.getBody().get("nextCursor").isNull()).isTrue();
+    }
+
+    @Test
+    void favoritesChatIsCreatedOnceAndWritableOnlyByOwner() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+
+        JsonNode first = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
+                .getBody().get("items");
+        String favoritesId = chatOfKind(first, "favorites").get("id").asText();
+
+        JsonNode second = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
+                .getBody().get("items");
+        assertThat(second.size()).isEqualTo(1);
+        assertThat(chatOfKind(second, "favorites").get("id").asText()).isEqualTo(favoritesId);
+
+        ResponseEntity<JsonNode> sent = authed(HttpMethod.POST,
+                "/api/v1/chats/" + favoritesId + "/messages", alice.accessToken(),
+                "{\"text\":\"Моя заметка\"}");
+        assertThat(sent.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(sent.getBody().get("text").asText()).isEqualTo("Моя заметка");
+
+        JsonNode messages = authed(HttpMethod.GET,
+                "/api/v1/chats/" + favoritesId + "/messages", alice.accessToken(), null)
+                .getBody().get("items");
+        assertThat(messages.size()).isEqualTo(1);
+        assertThat(messages.get(0).get("text").asText()).isEqualTo("Моя заметка");
+
+        authed(HttpMethod.GET, "/api/v1/chats", bob.accessToken(), null);
+        ResponseEntity<JsonNode> outsider = authed(HttpMethod.GET,
+                "/api/v1/chats/" + favoritesId + "/messages", bob.accessToken(), null);
+        assertThat(outsider.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     @Test
@@ -531,14 +566,24 @@ class ApiIntegrationTest {
         return response.getBody().get("id").asText();
     }
 
+    private JsonNode chatOfKind(JsonNode items, String kind) {
+        for (JsonNode item : items) {
+            if (kind.equals(item.path("kind").asText())) {
+                return item;
+            }
+        }
+        throw new AssertionError("Chat not found: " + kind);
+    }
+
     @Test
     void messagesAreEncryptedWithGostAndVisibleToBothMembers() {
         AuthData alice = tokenLogin(issueToken());
         AuthData bob = tokenLogin(issueToken());
 
         String chatId = createDirectChat(alice.accessToken(), bob.username());
-        JsonNode chat = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null).getBody()
-                .get("items").get(0);
+        JsonNode chats = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null).getBody()
+                .get("items");
+        JsonNode chat = chatOfKind(chats, "direct");
         assertThat(chat.get("id").asText()).isEqualTo(chatId);
         assertThat(chat.get("title").asText()).isEqualTo(bob.nickname());
 
@@ -629,8 +674,10 @@ class ApiIntegrationTest {
 
         assertThat(second).isEqualTo(first);
         assertThat(fromBob).isEqualTo(first);
-        assertThat(authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
-                .getBody().get("items").size()).isEqualTo(1);
+        JsonNode chats = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
+                .getBody().get("items");
+        assertThat(chats.size()).isEqualTo(2);
+        assertThat(chatOfKind(chats, "direct").get("id").asText()).isEqualTo(first);
     }
 
     @Test
@@ -639,8 +686,9 @@ class ApiIntegrationTest {
         AuthData bob = tokenLogin(issueToken());
 
         String chatId = createDirectChat(alice.accessToken(), bob.username());
-        JsonNode chat = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null).getBody()
-                .get("items").get(0);
+        JsonNode chats = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null).getBody()
+                .get("items");
+        JsonNode chat = chatOfKind(chats, "direct");
         assertThat(chat.get("id").asText()).isEqualTo(chatId);
         assertThat(chat.get("username").asText()).isEqualTo(bob.username());
 

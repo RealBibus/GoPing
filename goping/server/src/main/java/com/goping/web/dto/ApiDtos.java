@@ -33,6 +33,9 @@ public final class ApiDtos {
     public record UsernameAvailabilityResponse(String username, boolean available, String reason) {
     }
 
+    public record UserSearchResponse(List<UserDto> users) {
+    }
+
     public record GithubStartResponse(String authorizeUrl, String state, Instant expiresAt) {
     }
 
@@ -107,6 +110,7 @@ public final class ApiDtos {
             MessageSenderDto sender,
             String text,
             String algorithm,
+            String kind,
             Instant createdAt,
             ReplyPreviewDto replyTo,
             String status,

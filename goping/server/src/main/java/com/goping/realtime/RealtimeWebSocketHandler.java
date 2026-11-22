@@ -29,6 +29,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private final RealtimeHub hub;
     private final PresenceService presence;
     private final ChatService chats;
+    private final CallSignalingService calls;
     private final MessageService messages;
     private final DtoMapper mapper;
     private final ObjectMapper json;
@@ -36,12 +37,14 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     public RealtimeWebSocketHandler(RealtimeHub hub,
                                     PresenceService presence,
                                     ChatService chats,
+                                    CallSignalingService calls,
                                     MessageService messages,
                                     DtoMapper mapper,
                                     ObjectMapper json) {
         this.hub = hub;
         this.presence = presence;
         this.chats = chats;
+        this.calls = calls;
         this.messages = messages;
         this.mapper = mapper;
         this.json = json;
@@ -60,6 +63,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         hub.register(userId, session);
         presence.heartbeat(userId);
         broadcastPresence(userId, true);
+        calls.deliverPendingInvites(userId);
         log.debug("ws connected user={}", userId);
     }
 
@@ -85,10 +89,19 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         }
         JsonNode root = json.readTree(message.getPayload());
         String type = root.path("type").asText("");
+        if (type.startsWith("call.")) {
+            log.info("ws recv type={} from={}", type, userId);
+        }
         switch (type) {
             case "ping" -> session.sendMessage(new TextMessage("{\"type\":\"pong\"}"));
             case "typing" -> handleTyping(userId, root);
             case "read" -> handleRead(userId, root);
+            case "call.invite" -> { log.info("ws call.invite from={} chatId={}", userId, root.path("chatId").asText()); calls.invite(userId, root); }
+            case "call.accept" -> { log.info("ws call.accept from={} callId={}", userId, root.path("callId").asText()); calls.accept(userId, root); }
+            case "call.reject" -> { log.info("ws call.reject from={} callId={}", userId, root.path("callId").asText()); calls.reject(userId, root); }
+            case "call.end" -> { log.info("ws call.end from={} callId={}", userId, root.path("callId").asText()); calls.end(userId, root); }
+            case "call.signal" -> calls.signal(userId, root);
+            case "call.rejoin" -> { log.info("ws call.rejoin from={} callId={}", userId, root.path("callId").asText()); calls.rejoin(userId, root); }
             default -> log.debug("unknown ws type={}", type);
         }
     }
@@ -155,13 +168,8 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         if (lastSeen != null) {
             event.put("lastSeenAt", lastSeen.toString());
         }
-        // Рассылаем всем, у кого есть чат с этим юзером — упрощённо всем онлайн-сессиям
-        // через чаты слишком тяжело без индекса; шлём в его чаты.
-        for (var enriched : chats.list(userId, 100)) {
-            UUID peer = enriched.chat().peerUserId();
-            if (peer != null) {
-                hub.sendToUser(peer, event);
-            }
+        for (UUID peer : chats.listPeerIds(userId)) {
+            hub.sendToUser(peer, event);
         }
     }
 }

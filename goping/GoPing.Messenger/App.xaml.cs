@@ -59,9 +59,18 @@ public partial class App : Application
                 OpenMain(api, auth.User);
                 return;
             }
+            catch (ApiException ex) when (ex.Code is "UNAUTHORIZED"
+                                              or "INVALID_REFRESH_TOKEN"
+                                              or "INVALID_TOKEN"
+                                              or "EMPTY_SESSION")
+            {
+                // Сессия действительно недействительна — удаляем её.
+                SessionStore.Clear();
+            }
             catch
             {
-                SessionStore.Clear();
+                // Сервер недоступен или временный сбой. Сессию сохраняем,
+                // иначе после её возврата пользователя снова просят войти.
             }
         }
 
@@ -73,12 +82,14 @@ public partial class App : Application
         string[] keys =
         {
             "BgBrush", "SurfaceBrush", "SurfaceHoverBrush",
+            "HoverBrush", "SelectedBrush", "SearchFieldBrush", "SplitterBrush", "SplitterHoverBrush",
             "BorderBrush", "BorderStrongBrush",
             "TextBrush", "MutedBrush", "FaintBrush",
             "AccentBrush", "AccentSoftBrush",
             "DangerBrush", "DangerSoftBrush",
             "PrimaryBrush", "PrimaryHoverBrush", "PrimaryPressBrush",
-            "PrimaryForegroundBrush", "OnlineBrush"
+            "PrimaryForegroundBrush", "OnlineBrush", "FavoritesBrush",
+            "ScrollThumbBrush", "ScrollThumbHoverBrush", "ScrollThumbPressedBrush"
         };
 
         foreach (var key in keys)

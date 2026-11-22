@@ -45,7 +45,7 @@ public sealed class ApiClient : IDisposable
     {
         string? configured = baseUrl ?? Environment.GetEnvironmentVariable("GOPING_API_URL");
         BaseUrl = string.IsNullOrWhiteSpace(configured)
-            ? "http://localhost:8080"
+            ? "http://26.68.224.240:8080"
             : configured.TrimEnd('/');
 
         _http = new HttpClient
@@ -68,7 +68,8 @@ public sealed class ApiClient : IDisposable
     {
         _accessToken = null;
         _refreshToken = refreshToken;
-        _expiresAt = DateTimeOffset.MinValue;
+        // Срок действия access-токена неизвестен — следующий запрос обновит его.
+        _expiresAt = null;
     }
 
     public async Task<AuthResult> LoginWithTokenAsync(string token, CancellationToken ct = default)
@@ -124,12 +125,21 @@ public sealed class ApiClient : IDisposable
         return await response.Content.ReadAsByteArrayAsync(ct);
     }
 
-    public Task<GithubPoll> PollGithubAsync(string state, CancellationToken ct = default)
-        => SendPublicAsync<GithubPoll>(
+    public async Task<GithubPoll> PollGithubAsync(string state, CancellationToken ct = default)
+    {
+        GithubPoll poll = await SendPublicAsync<GithubPoll>(
             HttpMethod.Get,
             "api/v1/auth/github/poll?state=" + Uri.EscapeDataString(state),
             null,
             ct);
+        // Без этого MainWindow получает клиент без токенов и все запросы
+        // отвечают 401, пока приложение не перезапустится с сохранённой сессией.
+        if (poll.Auth is not null)
+        {
+            SetTokens(poll.Auth);
+        }
+        return poll;
+    }
 
     public async Task<UserProfile> GetMeAsync(CancellationToken ct = default)
     {
@@ -196,6 +206,32 @@ public sealed class ApiClient : IDisposable
             // Старый сервер не знает этот endpoint — разрешаем удаление по умолчанию.
             return new ClientConfig(true);
         }
+    }
+
+    /// <summary>ICE-серверы для WebRTC-звонков (STUN + при наличии coturn).</summary>
+    public async Task<RtcConfigResponse> GetRtcConfigAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            return await SendAuthenticatedAsync<RtcConfigResponse>(
+                HttpMethod.Get, "api/v1/rtc/config", null, ct);
+        }
+        catch (ApiException)
+        {
+            // Старый сервер ещё не отдаёт TURN — хватит публичного STUN.
+            return new RtcConfigResponse(null);
+        }
+    }
+
+    /// <summary>Быстрый поиск пользователей по подстроке username.</summary>
+    public async Task<IReadOnlyList<UserProfile>> SearchUsersAsync(string query, CancellationToken ct = default)
+    {
+        var response = await SendAuthenticatedAsync<UserSearchResponse>(
+            HttpMethod.Get,
+            "api/v1/users/search?q=" + Uri.EscapeDataString(query),
+            null,
+            ct);
+        return response.Users ?? Array.Empty<UserProfile>();
     }
 
     /// <summary>Профиль пользователя по username (для личных чатов). </summary>
@@ -268,7 +304,9 @@ public sealed class ApiClient : IDisposable
         {
             return;
         }
-        if (_expiresAt is not null && DateTimeOffset.UtcNow < _expiresAt.Value.AddSeconds(-60))
+        // Складываем вместо вычитания: AddSeconds(-60) переполняется,
+        // если expiresAt когда-либо окажется DateTimeOffset.MinValue.
+        if (_expiresAt is not null && DateTimeOffset.UtcNow + TimeSpan.FromSeconds(60) < _expiresAt.Value)
         {
             return;
         }

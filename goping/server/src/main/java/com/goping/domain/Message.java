@@ -17,6 +17,7 @@ public record Message(
         String senderAvatarUrl,
         String text,
         String algorithm,
+        String kind,
         Instant createdAt,
         UUID replyToId,
         String replyToText,

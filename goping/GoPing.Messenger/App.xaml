@@ -21,6 +21,105 @@
         <SolidColorBrush x:Key="PrimaryPressBrush" Color="#09090B"/>
         <SolidColorBrush x:Key="PrimaryForegroundBrush" Color="#FFFFFF"/>
 
+        <!-- Избранное: синий круг и белая закладка, как в Telegram -->
+        <SolidColorBrush x:Key="FavoritesBrush" Color="#1F95D0"/>
+        <PathGeometry x:Key="FavoritesIconGeometry" Figures="M4,2 L16,2 L16,18 L10,13.5 L4,18 Z"/>
+
+        <!-- Выделение и наведение: в светлой теме заметно серые -->
+        <SolidColorBrush x:Key="HoverBrush" Color="#EAEAEF"/>
+        <SolidColorBrush x:Key="SelectedBrush" Color="#DEDEE5"/>
+        <SolidColorBrush x:Key="SearchFieldBrush" Color="#DEDEE5"/>
+        <SolidColorBrush x:Key="SplitterBrush" Color="#B9B9C4"/>
+        <SolidColorBrush x:Key="SplitterHoverBrush" Color="#777785"/>
+
+        <!-- Полоска прокрутки: полупрозрачная, не выбивается из темы -->
+        <SolidColorBrush x:Key="ScrollThumbBrush" Color="#3D000000"/>
+        <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="#5A000000"/>
+        <SolidColorBrush x:Key="ScrollThumbPressedBrush" Color="#75000000"/>
+
+        <Style x:Key="SubtleThumb" TargetType="{x:Type Thumb}">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Thumb}">
+                        <Border x:Name="ThumbBd" CornerRadius="3" Margin="2,0"
+                                Background="{DynamicResource ScrollThumbBrush}"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbBd" Property="Background"
+                                        Value="{DynamicResource ScrollThumbHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbBd" Property="Background"
+                                        Value="{DynamicResource ScrollThumbPressedBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SubtleThumbHorizontal" TargetType="{x:Type Thumb}"
+               BasedOn="{StaticResource SubtleThumb}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Thumb}">
+                        <Border x:Name="ThumbBd" CornerRadius="3" Margin="0,2"
+                                Background="{DynamicResource ScrollThumbBrush}"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbBd" Property="Background"
+                                        Value="{DynamicResource ScrollThumbHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbBd" Property="Background"
+                                        Value="{DynamicResource ScrollThumbPressedBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <ControlTemplate x:Key="SubtleVerticalScrollBar" TargetType="{x:Type ScrollBar}">
+            <Grid Background="Transparent">
+                <Track x:Name="PART_Track" IsDirectionReversed="True">
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource SubtleThumb}" MinHeight="24"/>
+                    </Track.Thumb>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+
+        <ControlTemplate x:Key="SubtleHorizontalScrollBar" TargetType="{x:Type ScrollBar}">
+            <Grid Background="Transparent">
+                <Track x:Name="PART_Track" IsDirectionReversed="False">
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource SubtleThumbHorizontal}" MinWidth="24"/>
+                    </Track.Thumb>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="MinWidth" Value="10"/>
+            <Setter Property="Template" Value="{StaticResource SubtleVerticalScrollBar}"/>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto"/>
+                    <Setter Property="MinWidth" Value="0"/>
+                    <Setter Property="Height" Value="10"/>
+                    <Setter Property="MinHeight" Value="10"/>
+                    <Setter Property="Template" Value="{StaticResource SubtleHorizontalScrollBar}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <Style x:Key="PrimaryButton" TargetType="Button">
             <Setter Property="Height" Value="40"/>
             <Setter Property="Padding" Value="16,0"/>
@@ -122,6 +221,40 @@
 
         <Style x:Key="DangerGhostButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
             <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+        </Style>
+
+        <Style x:Key="FilterButton" TargetType="Button">
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="12,0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="FilterBd" CornerRadius="7"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="FilterBd" Property="Background"
+                                        Value="{DynamicResource HoverBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="Selected">
+                                <Setter TargetName="FilterBd" Property="Background"
+                                        Value="{DynamicResource SelectedBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="FieldLabel" TargetType="TextBlock">

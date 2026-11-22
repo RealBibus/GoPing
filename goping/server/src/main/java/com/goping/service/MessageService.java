@@ -75,11 +75,26 @@ public class MessageService {
             }
         }
 
-        User sender = users.findById(userId).orElseThrow(ApiException::notFound);
-        MessageCipher.Sealed sealed = cipher.seal(checked.value());
-        UUID id = UUID.randomUUID();
-        Instant createdAt = Instant.now();
+        return storeMessage(userId, chatId, checked.value(), "text", createdNow(), replyToId);
+    }
 
+    /** Системное сообщение о звонке в чат (видно обоим участникам). */
+    public Message sendCallLog(UUID chatId, UUID actorUserId, String callStatus, long durationSec) {
+        if (!chats.isMember(chatId, actorUserId)) {
+            throw ApiException.notFound();
+        }
+        String safeStatus = switch (callStatus == null ? "" : callStatus) {
+            case "ended", "missed", "declined", "cancelled" -> callStatus;
+            default -> "ended";
+        };
+        long safeDuration = Math.max(0, durationSec);
+        String payload = "{\"status\":\"" + safeStatus + "\",\"durationSec\":" + safeDuration + "}";
+        return storeMessage(actorUserId, chatId, payload, "call", createdNow(), null);
+    }
+
+    private Message storeMessage(UUID userId, UUID chatId, String text, String kind, Instant createdAt, UUID replyToId) {
+        MessageCipher.Sealed sealed = cipher.seal(text);
+        UUID id = UUID.randomUUID();
         messages.insert(
                 id,
                 chatId,
@@ -88,13 +103,17 @@ public class MessageService {
                 encode(sealed.nonce()),
                 encode(sealed.mac()),
                 MessageCipher.ALGORITHM,
+                kind,
                 createdAt,
                 replyToId
         );
-
         return messages.findById(id)
                 .map(stored -> decrypt(stored, userId, null))
                 .orElseThrow(ApiException::notFound);
+    }
+
+    private static Instant createdNow() {
+        return Instant.now();
     }
 
     public List<Message> list(UUID userId, UUID chatId, int limit) {
@@ -212,6 +231,7 @@ public class MessageService {
                 stored.senderAvatarUrl(),
                 text,
                 stored.algorithm(),
+                stored.kind(),
                 stored.createdAt(),
                 stored.replyToId(),
                 replyText,

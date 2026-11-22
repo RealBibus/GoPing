@@ -83,6 +83,29 @@ public class UserRepository {
         return users.stream().findFirst();
     }
 
+    /**
+     * Поиск по подстроке username. Символы !, % и _ экранируются,
+     * чтобы ввод не менял смысл LIKE-шаблона.
+     */
+    public List<User> searchByUsername(String query, UUID excludeId, int limit) {
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        StringBuilder escaped = new StringBuilder(query.length() + 2);
+        for (int i = 0; i < query.length(); i++) {
+            char c = query.charAt(i);
+            if (c == '!' || c == '%' || c == '_') {
+                escaped.append('!');
+            }
+            escaped.append(c);
+        }
+        String pattern = "%" + escaped + "%";
+        return jdbc.query(
+                "SELECT " + COLUMNS + " FROM users WHERE username LIKE ? ESCAPE '!' "
+                        + "AND id <> ? ORDER BY username LIMIT ?",
+                USER_MAPPER, pattern, excludeId.toString(), limit);
+    }
+
     public Optional<User> findByGithubId(String githubId) {
         if (githubId == null || githubId.isBlank()) {
             return Optional.empty();

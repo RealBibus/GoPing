@@ -418,3 +418,6 @@ data/
 **/obj/
 **/target/
 publish/
+
+# GoPing: локальный набор эмодзи (~176 МБ, 2358 SVG) — не коммитим в GitHub
+**/emojiP/

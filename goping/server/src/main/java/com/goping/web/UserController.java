@@ -6,6 +6,7 @@ import com.goping.error.ValidationException;
 import com.goping.security.RequestContext;
 import com.goping.service.UserService;
 import com.goping.web.dto.ApiDtos;
+import com.goping.web.dto.UserDto;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,6 +56,16 @@ public class UserController {
                 new UserService.UpdateProfileInput(body.nickname(), body.username(), body.bio())
         );
         return new ApiDtos.UserEnvelope(mapper.user(user));
+    }
+
+    /** Простой поиск пользователей по подстроке username. */
+    @GetMapping("/search")
+    public ApiDtos.UserSearchResponse search(@RequestParam(required = false) String q,
+                                             HttpServletRequest request) {
+        List<UserDto> found = users.search(RequestContext.userId(request), q).stream()
+                .map(mapper::user)
+                .toList();
+        return new ApiDtos.UserSearchResponse(found);
     }
 
     /** Проверка занятости username для формы (можно вызывать с debounce). */

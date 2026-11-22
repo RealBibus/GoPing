@@ -24,6 +24,8 @@ import java.util.UUID;
 public class ChatService {
 
     private static final int PREVIEW_MAX = 80;
+    private static final String FAVORITES_KIND = "favorites";
+    private static final String FAVORITES_TITLE = "Favorites";
 
     private final ChatRepository chats;
     private final UserRepository users;
@@ -40,9 +42,11 @@ public class ChatService {
         this.presence = presence;
     }
 
+    @Transactional
     public List<EnrichedChat> list(UUID userId, int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         presence.heartbeat(userId);
+        ensureFavorites(userId);
         List<Chat> found = chats.listForUser(userId, safeLimit);
         List<EnrichedChat> result = new ArrayList<>(found.size());
         for (Chat chat : found) {
@@ -84,6 +88,20 @@ public class ChatService {
         return enrich(created, userId);
     }
 
+    /** Создаёт серверный чат «Избранное» один раз и возвращает его при следующих вызовах. */
+    @Transactional
+    public EnrichedChat ensureFavorites(UUID userId) {
+        Chat existing = chats.findByKindForUser(userId, FAVORITES_KIND).orElse(null);
+        if (existing != null) {
+            return enrich(existing, userId);
+        }
+
+        UUID chatId = UUID.randomUUID();
+        chats.createFavorites(chatId, userId, FAVORITES_TITLE, Instant.now());
+        Chat created = chats.findForUser(chatId, userId).orElseThrow(ApiException::notFound);
+        return enrich(created, userId);
+    }
+
     public void markTyping(UUID userId, UUID chatId) {
         if (!chats.isMember(chatId, userId)) {
             throw ApiException.notFound();
@@ -91,9 +109,13 @@ public class ChatService {
         presence.setTyping(chatId, userId);
     }
 
+    public List<UUID> listPeerIds(UUID userId) {
+        return chats.listPeerUserIds(userId);
+    }
+
     private EnrichedChat enrich(Chat chat, UUID viewerId) {
         Message latest = messages.latestForChat(chat.id(), viewerId);
-        String preview = latest == null ? null : previewText(latest.text());
+        String preview = latest == null ? null : previewText(latest);
         Instant lastAt = latest == null ? null : latest.createdAt();
 
         UUID peerId = chat.peerUserId();
@@ -102,6 +124,42 @@ public class ChatService {
         boolean typing = presence.peerTyping(chat.id(), viewerId);
 
         return new EnrichedChat(chat, preview, lastAt, online, lastSeen, typing);
+    }
+
+    private static String previewText(Message message) {
+        if (message == null) return null;
+        if ("call".equals(message.kind())) {
+            return callPreview(message.text());
+        }
+        return previewText(message.text());
+    }
+
+    private static String callPreview(String payload) {
+        String status = "ended";
+        long sec = 0;
+        if (payload != null) {
+            if (payload.contains("\"status\":\"missed\"")) status = "missed";
+            else if (payload.contains("\"status\":\"declined\"")) status = "declined";
+            else if (payload.contains("\"status\":\"cancelled\"")) status = "missed";
+            else if (payload.contains("\"status\":\"ended\"")) status = "ended";
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"durationSec\"\\s*:\\s*(\\d+)").matcher(payload);
+            if (m.find()) {
+                try { sec = Long.parseLong(m.group(1)); } catch (NumberFormatException ignored) { }
+            }
+        }
+        return switch (status) {
+            case "missed" -> "Missed call";
+            case "declined" -> "Call declined";
+            default -> sec > 0 ? "Call ended · " + formatDuration(sec) : "Call ended";
+        };
+    }
+
+    private static String formatDuration(long sec) {
+        long h = sec / 3600;
+        long m = (sec % 3600) / 60;
+        long s = sec % 60;
+        if (h > 0) return String.format("%d:%02d:%02d", h, m, s);
+        return String.format("%d:%02d", m, s);
     }
 
     private static String previewText(String text) {

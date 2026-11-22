@@ -23,6 +23,8 @@ public sealed record AuthResult(
 
 public sealed record UserEnvelope(UserProfile User);
 
+public sealed record UserSearchResponse(IReadOnlyList<UserProfile> Users);
+
 public sealed record GithubStart(
     string AuthorizeUrl,
     string State,
@@ -46,6 +48,8 @@ public sealed record ChatSummary(
     DateTimeOffset? PeerLastSeenAt = null,
     bool PeerTyping = false)
 {
+    public bool IsFavorites => string.Equals(Kind, "favorites", StringComparison.Ordinal);
+
     public string PreviewLine =>
         string.IsNullOrWhiteSpace(LastMessageText) ? "No messages yet" : LastMessageText!;
 }
@@ -74,13 +78,19 @@ public sealed record ChatMessage(
     DateTimeOffset CreatedAt,
     ReplyPreview? ReplyTo = null,
     string? Status = null,
-    string? PinScope = null);
+    string? PinScope = null,
+    string? Kind = null)
+{
+    public bool IsCall => string.Equals(Kind, "call", StringComparison.OrdinalIgnoreCase);
+}
 
 public sealed record MessageListResponse(
     IReadOnlyList<ChatMessage> Items,
     string? NextCursor);
 
 public sealed record ClientConfig(bool AllowDeleteOthersMessages);
+
+public sealed record RtcConfigResponse(IReadOnlyList<JsonElement>? IceServers);
 
 public sealed record ApiErrorEnvelope(ApiError Error);
 

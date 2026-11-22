@@ -30,6 +30,7 @@ public class MessageRepository {
             String nonce,
             String mac,
             String algorithm,
+            String kind,
             Instant createdAt,
             UUID replyToId,
             String replyCiphertext,
@@ -41,6 +42,7 @@ public class MessageRepository {
 
     private static final RowMapper<EncryptedMessage> MESSAGE_MAPPER = (rs, rowNum) -> {
         String replyTo = rs.getString("reply_to_id");
+        String kind = rs.getString("kind");
         return new EncryptedMessage(
                 UUID.fromString(rs.getString("id")),
                 UUID.fromString(rs.getString("chat_id")),
@@ -53,6 +55,7 @@ public class MessageRepository {
                 rs.getString("nonce"),
                 rs.getString("mac"),
                 rs.getString("algorithm"),
+                kind == null || kind.isBlank() ? "text" : kind,
                 Instant.ofEpochMilli(rs.getLong("created_at")),
                 replyTo == null || replyTo.isBlank() ? null : UUID.fromString(replyTo),
                 rs.getString("reply_ciphertext"),
@@ -64,7 +67,7 @@ public class MessageRepository {
 
     private static final String SELECT_WITH_REPLY = """
             SELECT m.id, m.chat_id, m.sender_id, m.ciphertext, m.nonce, m.mac,
-                   m.algorithm, m.created_at, m.reply_to_id,
+                   m.algorithm, m.kind, m.created_at, m.reply_to_id,
                    u.username AS sender_username,
                    u.nickname AS sender_nickname,
                    u.avatar_path AS sender_avatar_path,
@@ -92,12 +95,13 @@ public class MessageRepository {
                        String nonce,
                        String mac,
                        String algorithm,
+                       String kind,
                        Instant createdAt,
                        UUID replyToId) {
         jdbc.update("""
                         INSERT INTO messages
-                            (id, chat_id, sender_id, ciphertext, nonce, mac, algorithm, created_at, reply_to_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (id, chat_id, sender_id, ciphertext, nonce, mac, algorithm, kind, created_at, reply_to_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 id.toString(),
                 chatId.toString(),
@@ -106,6 +110,7 @@ public class MessageRepository {
                 nonce,
                 mac,
                 algorithm,
+                kind == null || kind.isBlank() ? "text" : kind,
                 createdAt.toEpochMilli(),
                 replyToId == null ? null : replyToId.toString());
     }

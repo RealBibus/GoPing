@@ -92,9 +92,10 @@ public class ChatRepository {
                         FROM chats c
                         JOIN chat_members m ON m.chat_id = c.id
                         WHERE m.user_id = ?
-                        ORDER BY COALESCE((
-                            SELECT MAX(msg.created_at) FROM messages msg WHERE msg.chat_id = c.id
-                        ), c.created_at) DESC, c.id DESC
+                        ORDER BY CASE WHEN c.kind = 'favorites' THEN 0 ELSE 1 END,
+                                 COALESCE((
+                                     SELECT MAX(msg.created_at) FROM messages msg WHERE msg.chat_id = c.id
+                                 ), c.created_at) DESC, c.id DESC
                         LIMIT ?
                         """.formatted(CHAT_COLUMNS),
                 CHAT_MAPPER, me, me, me, me, me, me, limit);
@@ -133,6 +134,19 @@ public class ChatRepository {
                 chatId.toString());
     }
 
+    /** Все собеседники пользователя (по всем чатам), без дубликатов. */
+    public List<UUID> listPeerUserIds(UUID userId) {
+        String me = userId.toString();
+        return jdbc.query("""
+                        SELECT DISTINCT pm.user_id
+                        FROM chat_members m
+                        JOIN chat_members pm ON pm.chat_id = m.chat_id AND pm.user_id <> m.user_id
+                        WHERE m.user_id = ?
+                        """,
+                (rs, rowNum) -> UUID.fromString(rs.getString("user_id")),
+                me);
+    }
+
     /** Личный чат ровно между двумя пользователями, если он уже есть. */
     public Optional<Chat> findDirectBetween(UUID firstUserId, UUID secondUserId) {
         String me = firstUserId.toString();
@@ -168,5 +182,34 @@ public class ChatRepository {
                         VALUES (?, ?, ?)
                         """,
                 chatId.toString(), secondUserId.toString(), epochMillis);
+    }
+
+    /** Специальный чат заданного типа, уже существующий у пользователя. */
+    public Optional<Chat> findByKindForUser(UUID userId, String kind) {
+        String me = userId.toString();
+        List<Chat> chats = jdbc.query("""
+                        SELECT %s
+                        FROM chats c
+                        JOIN chat_members m ON m.chat_id = c.id
+                        WHERE m.user_id = ? AND c.kind = ?
+                        LIMIT 1
+                        """.formatted(CHAT_COLUMNS),
+                CHAT_MAPPER, me, me, me, me, me, me, kind);
+        return chats.stream().findFirst();
+    }
+
+    /** Избранное: один участник — владелец, заголовок хранится в чате. */
+    public void createFavorites(UUID chatId, UUID userId, String title, Instant createdAt) {
+        long epochMillis = createdAt.toEpochMilli();
+        jdbc.update("""
+                        INSERT INTO chats (id, kind, title, owner_id, created_at)
+                        VALUES (?, 'favorites', ?, ?, ?)
+                        """,
+                chatId.toString(), title, userId.toString(), epochMillis);
+        jdbc.update("""
+                        INSERT INTO chat_members (chat_id, user_id, joined_at)
+                        VALUES (?, ?, ?)
+                        """,
+                chatId.toString(), userId.toString(), epochMillis);
     }
 }

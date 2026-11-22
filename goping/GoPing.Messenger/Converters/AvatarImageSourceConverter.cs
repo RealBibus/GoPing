@@ -19,8 +19,13 @@ public sealed class AvatarImageSourceConverter : IValueConverter
 
         try
         {
-            var bitmap = new BitmapImage(new Uri(url));
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.UriSource = new Uri(url, UriKind.Absolute);
+            // OnLoad загружает байты сразу. С OnDemand замораживание ниже
+            // отменяет отложенную загрузку, и аватарка остаётся пустой.
             bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.EndInit();
             bitmap.Freeze();
             return bitmap;
         }

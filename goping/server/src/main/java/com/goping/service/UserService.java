@@ -12,6 +12,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -45,6 +46,25 @@ public class UserService {
         String username = Validation.normalizeUsername(rawUsername);
         return users.findByUsername(username).orElseThrow(() -> new ApiException(
                 HttpStatus.NOT_FOUND, "NOT_FOUND", "Пользователь не найден"));
+    }
+
+    /**
+     * Простой поиск по username: без регистра, по любым буквам/цифрам/underline
+     * внутри строки. Всё лишнее (например, @ в начале) просто отбрасывается.
+     */
+    public List<User> search(UUID me, String raw) {
+        StringBuilder cleaned = new StringBuilder();
+        String query = Validation.normalizeUsername(raw);
+        for (int i = 0; i < query.length(); i++) {
+            char c = query.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+                cleaned.append(c);
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return List.of();
+        }
+        return users.searchByUsername(cleaned.toString(), me, 20);
     }
 
     public User updateProfile(UUID userId, UpdateProfileInput input) {

@@ -91,6 +91,7 @@ public class DtoMapper {
                 ),
                 message.text(),
                 message.algorithm(),
+                message.kind(),
                 message.createdAt(),
                 reply,
                 message.deliveryStatus(),

@@ -53,6 +53,14 @@ app:
   github-callback-url: ${GITHUB_CALLBACK_URL:http://localhost:8080/api/v1/auth/github/callback}
   github-scope: ${GITHUB_SCOPE:read:user}
 
+  # WebRTC/coturn. Без TURN звонки работают не во всех сетях.
+  # Локальный coturn запускается скриптом goping/start-server.cmd (WSL).
+  # Для звонков через Radmin/VPN добавьте IP этого ПК в TURN_URLS.
+  turn:
+    urls: ${TURN_URLS:turn:127.0.0.1:3478?transport=udp,turn:127.0.0.1:3478?transport=tcp,turn:26.68.224.240:3478?transport=udp,turn:26.68.224.240:3478?transport=tcp,turn:192.168.0.210:3478?transport=udp,turn:192.168.0.210:3478?transport=tcp}
+    username: ${TURN_USERNAME:goping}
+    credential: ${TURN_CREDENTIAL:gopingturn}
+
 logging:
   level:
     root: INFO
