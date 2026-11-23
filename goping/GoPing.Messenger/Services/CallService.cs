@@ -60,6 +60,7 @@ public sealed class CallService
     private ScreenShareSource? _pendingScreenSource;
     private CancellationTokenSource? _screenCaptureCts;
     private Task? _screenCaptureTask;
+    private WgcScreenCapturer? _wgcCapturer;
 
     public CallService(ApiClient api, Func<string, Task> sendAsync, Action<string>? dropPending = null)
     {
@@ -72,6 +73,22 @@ public sealed class CallService
     public bool IsMuted => _muted;
     public bool IsDeafened => _deafened;
     public bool IsScreenSharing { get; private set; }
+    public int ScreenShareFps { get; set; } = 30;
+    public string ScreenCaptureMode { get; set; } = "Auto";
+    public string ScreenShareQuality { get; set; } = "HD";
+
+    public static (int MaxWidth, long JpegQuality) ResolveScreenShareQuality(string? quality)
+    {
+        return (quality ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "standard" or "sd" or "960p" => (960, 45L),
+            "high" => (1280, 65L),
+            "hd" or "1600p" => (1600, 75L),
+            "fullhd" or "1080p" or "fhd" => (1920, 80L),
+            "native" or "source" or "original" => (3840, 82L),
+            _ => (1600, 75L)
+        };
+    }
 
     public event Action<CallInfo>? Incoming;
     public event Action<CallStatus, string>? StateChanged;
@@ -205,22 +222,47 @@ public sealed class CallService
 
     private Task ExecJsAsync(string script)
     {
-        if (_webView?.CoreWebView2 is null) return Task.CompletedTask;
-        if (_webView.Dispatcher.CheckAccess())
-            return _webView.CoreWebView2.ExecuteScriptAsync(script);
-        return _webView.Dispatcher.InvokeAsync(() => _webView.CoreWebView2.ExecuteScriptAsync(script)).Task.Unwrap();
+        var wv = _webView;
+        if (wv is null) return Task.CompletedTask;
+        if (wv.Dispatcher.CheckAccess())
+            return wv.CoreWebView2 is null ? Task.CompletedTask : wv.CoreWebView2.ExecuteScriptAsync(script);
+        return wv.Dispatcher.InvokeAsync(() =>
+        {
+            var core = wv.CoreWebView2;
+            return core is null ? Task.CompletedTask : core.ExecuteScriptAsync(script);
+        }).Task.Unwrap();
+    }
+
+    private async Task<string?> ExecJsResultAsync(string script)
+    {
+        var wv = _webView;
+        if (wv is null) return null;
+        if (wv.Dispatcher.CheckAccess())
+        {
+            var core = wv.CoreWebView2;
+            return core is null ? null : await core.ExecuteScriptAsync(script);
+        }
+        return await wv.Dispatcher.InvokeAsync(async () =>
+        {
+            var core = wv.CoreWebView2;
+            return core is null ? null : await core.ExecuteScriptAsync(script);
+        }).Task.Unwrap();
     }
 
     private Task PostWebMessageAsync(object payload)
     {
-        if (_webView?.CoreWebView2 is null) return Task.CompletedTask;
+        var wv = _webView;
+        if (wv is null) return Task.CompletedTask;
         string json = JsonSerializer.Serialize(payload, _jsonOptions);
-        if (_webView.Dispatcher.CheckAccess())
+        if (wv.Dispatcher.CheckAccess())
         {
-            _webView.CoreWebView2.PostWebMessageAsJson(json);
+            if (wv.CoreWebView2 is not null) wv.CoreWebView2.PostWebMessageAsJson(json);
             return Task.CompletedTask;
         }
-        return _webView.Dispatcher.InvokeAsync(() => _webView.CoreWebView2.PostWebMessageAsJson(json)).Task;
+        return wv.Dispatcher.InvokeAsync(() =>
+        {
+            if (wv.CoreWebView2 is not null) wv.CoreWebView2.PostWebMessageAsJson(json);
+        }).Task;
     }
 
     private static string JsStr(string s) => JsonSerializer.Serialize(s);
@@ -419,6 +461,12 @@ public sealed class CallService
         return ExecJsAsync($"window.gopingCall && window.gopingCall.setDeafened({(deafened ? "true" : "false")})");
     }
 
+    public Task SetRemoteVolumeAsync(double volume)
+    {
+        double v = Math.Clamp(volume, 0.0, 4.0);
+        return ExecJsAsync($"window.gopingCall && window.gopingCall.setRemoteVolume({v.ToString(System.Globalization.CultureInfo.InvariantCulture)})");
+    }
+
     private Task SendMediaStateAsync()
     {
         CallInfo? call;
@@ -436,11 +484,55 @@ public sealed class CallService
 
     public async Task StartScreenShareAsync(ScreenShareSource source)
     {
+        CallInfo? current;
+        lock (_lock) current = _current;
+        if (current is null) throw new InvalidOperationException("No active call.");
+
         _pendingScreenSource = source;
         await EnsureEngineReadyAsync();
+
+        bool hasPc = false;
+        for (int i = 0; i < 30; i++)
+        {
+            var result = await ExecJsResultAsync("window.gopingCall && window.gopingCall.hasActivePc ? window.gopingCall.hasActivePc() : false");
+            if (string.Equals(result, "true", StringComparison.OrdinalIgnoreCase)) { hasPc = true; break; }
+            await Task.Delay(100);
+        }
+        if (!hasPc) throw new InvalidOperationException("Call is not connected yet. Try again in a moment.");
+
         await StopScreenCaptureLoopAsync(stopJs: false);
-        // Use WebView2 getDisplayMedia (reliable) with in-WebView gesture prompt.
-        _ = ExecJsAsync("window.gopingCall && window.gopingCall.requestScreenShare()");
+
+        _wgcCapturer?.Dispose();
+        _wgcCapturer = null;
+        var mode = (ScreenCaptureMode ?? "Auto").Trim();
+        bool wantWgc = !mode.Equals("Gdi", StringComparison.OrdinalIgnoreCase);
+        bool wantGdiFallback = !mode.Equals("Wgc", StringComparison.OrdinalIgnoreCase);
+        if (wantWgc)
+        {
+            _wgcCapturer = WgcScreenCapturer.TryCreate(source);
+            if (_wgcCapturer is null)
+            {
+                if (wantGdiFallback)
+                    CallLogger.Info("WGC unavailable, falling back to GDI capture");
+                else
+                    throw new InvalidOperationException("WGC capture is unavailable on this PC. Switch capture mode to Auto or GDI.");
+            }
+        }
+        else
+        {
+            CallLogger.Info("Screen capture mode: GDI");
+        }
+
+        int w = Math.Max(1, source.Width);
+        int h = Math.Max(1, source.Height);
+        int fps = Math.Clamp(ScreenShareFps, 30, 60);
+        await ExecJsAsync($"window.gopingCall && window.gopingCall.startScreenShareExternal({w},{h},{fps})");
+
+        _screenCaptureCts = new CancellationTokenSource();
+        var ct = _screenCaptureCts.Token;
+        var src = source;
+        _screenCaptureTask = Task.Run(() => ScreenCaptureLoopAsync(src, ct), ct);
+        IsScreenSharing = true;
     }
 
     public async Task StopScreenShareAsync()
@@ -460,6 +552,8 @@ public sealed class CallService
         _screenCaptureCts?.Dispose();
         _screenCaptureCts = null;
         _screenCaptureTask = null;
+        _wgcCapturer?.Dispose();
+        _wgcCapturer = null;
         if (stopJs)
             await ExecJsAsync("window.gopingCall && window.gopingCall.stopScreenShare().catch(e=>console.error(e))");
     }
@@ -467,21 +561,26 @@ public sealed class CallService
     private async Task ScreenCaptureLoopAsync(ScreenShareSource src, CancellationToken ct)
     {
         int sent = 0;
+        var sw = new System.Diagnostics.Stopwatch();
         while (!ct.IsCancellationRequested)
         {
+            sw.Restart();
             try
             {
-                string? dataUrl = CaptureFrameDataUrl(src);
+                var (maxW, jpegQ) = ResolveScreenShareQuality(ScreenShareQuality);
+                var capturer = _wgcCapturer;
+                string? dataUrl = capturer?.TryCaptureJpegBase64(maxW, jpegQ);
+                if (dataUrl is null) dataUrl = await CaptureFrameDataUrlGdiAsync(src, maxW, jpegQ);
                 if (dataUrl is not null)
                 {
                     await PostWebMessageAsync(new { type = "screenFrame", dataUrl });
                     sent++;
                     if (sent == 1 || sent % 50 == 0)
-                        CallLogger.Info($"screen frame sent #{sent} len={dataUrl.Length} src={src.Kind} {src.Width}x{src.Height}");
+                        CallLogger.Info($"screen frame sent #{sent} len={dataUrl.Length} mode={(capturer != null ? "wgc" : "gdi")} q={jpegQ} maxW={maxW}");
                 }
                 else if (sent == 0)
                 {
-                    CallLogger.Info("screen capture returned null frame");
+                    CallLogger.Info("screen capture returned no frame yet");
                 }
             }
             catch (Exception ex)
@@ -489,11 +588,15 @@ public sealed class CallService
                 CallLogger.Error("screen capture frame failed", ex);
             }
 
-            try { await Task.Delay(100, ct); } catch { break; }
+            int fps = Math.Clamp(ScreenShareFps, 30, 60);
+            int targetMs = 1000 / fps;
+            int remaining = targetMs - (int)sw.ElapsedMilliseconds;
+            if (remaining < 1) remaining = 1;
+            try { await Task.Delay(remaining, ct); } catch { break; }
         }
     }
 
-    private static string? CaptureFrameDataUrl(ScreenShareSource src)
+    private static Task<string?> CaptureFrameDataUrlGdiAsync(ScreenShareSource src, int maxW, long quality)
     {
         try
         {
@@ -505,51 +608,26 @@ public sealed class CallService
                 left = wr.Left;
                 top = wr.Top;
             }
+
             using var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
             using (var g = System.Drawing.Graphics.FromImage(bmp))
             {
-                if (src.Kind == ScreenShareKind.Monitor)
-                {
-                    g.CopyFromScreen(left, top, 0, 0, new System.Drawing.Size(w, h), System.Drawing.CopyPixelOperation.SourceCopy | System.Drawing.CopyPixelOperation.CaptureBlt);
-                }
-                else
-                {
-                    bool captured = false;
-                    try
-                    {
-                        g.CopyFromScreen(left, top, 0, 0, new System.Drawing.Size(w, h),
-                            System.Drawing.CopyPixelOperation.SourceCopy | System.Drawing.CopyPixelOperation.CaptureBlt);
-                        captured = !IsMostlyBlack(bmp);
-                    }
-                    catch { }
-
-                    if (!captured)
-                    {
-                        IntPtr hdc = g.GetHdc();
-                        try
-                        {
-                            PrintWindow(src.Handle, hdc, 2);
-                        }
-                        finally
-                        {
-                            if (hdc != IntPtr.Zero) g.ReleaseHdc(hdc);
-                        }
-                    }
-                }
+                g.CopyFromScreen(left, top, 0, 0, new System.Drawing.Size(w, h),
+                    System.Drawing.CopyPixelOperation.SourceCopy);
+                DrawCursorGdi(g, left, top);
             }
 
-            // Scale down large captures to reduce payload size.
-            const int maxW = 960;
+            int targetMaxW = Math.Max(320, maxW);
             System.Drawing.Bitmap toEncode = bmp;
             bool scaled = false;
-            if (w > maxW)
+            if (w > targetMaxW)
             {
-                int nh = Math.Max(1, (int)(h * (maxW / (double)w)));
-                var small = new System.Drawing.Bitmap(maxW, nh, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+                int nh = Math.Max(1, (int)(h * (targetMaxW / (double)w)));
+                var small = new System.Drawing.Bitmap(targetMaxW, nh, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
                 using (var sg = System.Drawing.Graphics.FromImage(small))
                 {
-                    sg.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
-                    sg.DrawImage(bmp, 0, 0, maxW, nh);
+                    sg.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                    sg.DrawImage(bmp, 0, 0, targetMaxW, nh);
                 }
                 toEncode = small;
                 scaled = true;
@@ -558,66 +636,99 @@ public sealed class CallService
             try
             {
                 using var ms = new MemoryStream();
-                var encoder = GetJpegEncoder();
+                var encoder = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
+                    .FirstOrDefault(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
                 if (encoder is not null)
                 {
                     using var ep = new System.Drawing.Imaging.EncoderParameters(1);
-                    ep.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 45L);
+                    ep.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, Math.Clamp(quality, 20L, 95L));
                     toEncode.Save(ms, encoder, ep);
                 }
                 else
                 {
                     toEncode.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                 }
-                return "data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray());
+                return Task.FromResult<string?>("data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray()));
             }
             finally
             {
                 if (scaled) toEncode.Dispose();
             }
         }
-        catch
+        catch (Exception ex)
         {
-            return null;
+            CallLogger.Error($"GDI capture failed src={src.Kind} {src.Width}x{src.Height} handle={src.Handle}", ex);
+            return Task.FromResult<string?>(null);
         }
     }
-
-    private static bool IsMostlyBlack(System.Drawing.Bitmap bmp)
-    {
-        try
-        {
-            int w = bmp.Width, h = bmp.Height;
-            int stepX = Math.Max(1, w / 20);
-            int stepY = Math.Max(1, h / 20);
-            int samples = 0, bright = 0;
-            for (int y = 0; y < h; y += stepY)
-            {
-                for (int x = 0; x < w; x += stepX)
-                {
-                    var c = bmp.GetPixel(x, y);
-                    samples++;
-                    if (c.R > 15 || c.G > 15 || c.B > 15) bright++;
-                }
-            }
-            return samples == 0 || (bright * 100 / samples) < 2;
-        }
-        catch { return false; }
-    }
-
-    private static System.Drawing.Imaging.ImageCodecInfo? GetJpegEncoder()
-    {
-        return System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
-            .FirstOrDefault(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
-    }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct CURSORINFO
+    {
+        public int cbSize;
+        public int flags;
+        public IntPtr hCursor;
+        public POINT ptScreenPos;
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct ICONINFO
+    {
+        public bool fIcon;
+        public int xHotspot;
+        public int yHotspot;
+        public IntPtr hbmMask;
+        public IntPtr hbmColor;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorInfo(ref CURSORINFO pci);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon,
+        int cxWidth, int cyHeight, int istepIfAniCur, IntPtr hbrFlickerFreeDraw, int diNormal);
+
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr hObject);
+
+    private const int CURSOR_SHOWING = 0x00000001;
+    private const int DI_NORMAL = 0x0003;
+
+    private static void DrawCursorGdi(System.Drawing.Graphics g, int captureLeft, int captureTop)
+    {
+        try
+        {
+            var ci = new CURSORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<CURSORINFO>() };
+            if (!GetCursorInfo(ref ci) || ci.flags != CURSOR_SHOWING || ci.hCursor == IntPtr.Zero) return;
+            if (!GetIconInfo(ci.hCursor, out var ii)) return;
+            try
+            {
+                int x = ci.ptScreenPos.X - captureLeft - ii.xHotspot;
+                int y = ci.ptScreenPos.Y - captureTop - ii.yHotspot;
+                IntPtr hdc = g.GetHdc();
+                try { DrawIconEx(hdc, x, y, ci.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL); }
+                finally { g.ReleaseHdc(hdc); }
+            }
+            finally
+            {
+                if (ii.hbmMask != IntPtr.Zero) DeleteObject(ii.hbmMask);
+                if (ii.hbmColor != IntPtr.Zero) DeleteObject(ii.hbmColor);
+            }
+        }
+        catch { }
+    }
 
     private void Finish(string text, string? callId)
     {
@@ -639,6 +750,8 @@ public sealed class CallService
         _screenCaptureCts?.Dispose();
         _screenCaptureCts = null;
         _screenCaptureTask = null;
+        _wgcCapturer?.Dispose();
+        _wgcCapturer = null;
         _pendingScreenSource = null;
         _ = ExecJsAsync("window.gopingCall && window.gopingCall.stop()");
         Emit(CallStatus.Ended, text);

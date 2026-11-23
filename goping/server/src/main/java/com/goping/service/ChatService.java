@@ -131,6 +131,9 @@ public class ChatService {
         if ("call".equals(message.kind())) {
             return callPreview(message.text());
         }
+        if ("voice".equals(message.kind())) {
+            return "Voice message";
+        }
         return previewText(message.text());
     }
 

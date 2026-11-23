@@ -38,6 +38,15 @@ public class RealtimeEvents {
         pushChatUpdated(chatId);
     }
 
+    public void messageEdited(UUID chatId, ApiDtos.MessageDto message) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "message.edited");
+        event.put("chatId", chatId.toString());
+        event.put("message", message);
+        hub.sendToChat(chatId, event);
+        pushChatUpdated(chatId);
+    }
+
     public void messageDeleted(UUID chatId, UUID messageId, boolean forEveryone, UUID onlyForUser) {
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("type", "message.deleted");

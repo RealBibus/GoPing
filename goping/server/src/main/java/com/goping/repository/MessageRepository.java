@@ -36,13 +36,18 @@ public class MessageRepository {
             String replyCiphertext,
             String replyNonce,
             String replyMac,
-            String replySenderNickname
+            String replySenderNickname,
+            Instant editedAt,
+            String forwardedFromSenderNickname,
+            String forwardedFromText
     ) {
     }
 
     private static final RowMapper<EncryptedMessage> MESSAGE_MAPPER = (rs, rowNum) -> {
         String replyTo = rs.getString("reply_to_id");
         String kind = rs.getString("kind");
+        long editedAtRaw = rs.getLong("edited_at");
+        Instant editedAt = rs.wasNull() ? null : Instant.ofEpochMilli(editedAtRaw);
         return new EncryptedMessage(
                 UUID.fromString(rs.getString("id")),
                 UUID.fromString(rs.getString("chat_id")),
@@ -61,13 +66,17 @@ public class MessageRepository {
                 rs.getString("reply_ciphertext"),
                 rs.getString("reply_nonce"),
                 rs.getString("reply_mac"),
-                rs.getString("reply_sender_nickname")
+                rs.getString("reply_sender_nickname"),
+                editedAt,
+                rs.getString("forwarded_from_sender_nickname"),
+                rs.getString("forwarded_from_text")
         );
     };
 
     private static final String SELECT_WITH_REPLY = """
             SELECT m.id, m.chat_id, m.sender_id, m.ciphertext, m.nonce, m.mac,
                    m.algorithm, m.kind, m.created_at, m.reply_to_id,
+                   m.edited_at, m.forwarded_from_sender_nickname, m.forwarded_from_text,
                    u.username AS sender_username,
                    u.nickname AS sender_nickname,
                    u.avatar_path AS sender_avatar_path,
@@ -97,11 +106,14 @@ public class MessageRepository {
                        String algorithm,
                        String kind,
                        Instant createdAt,
-                       UUID replyToId) {
+                       UUID replyToId,
+                       String forwardedFromSenderNickname,
+                       String forwardedFromText) {
         jdbc.update("""
                         INSERT INTO messages
-                            (id, chat_id, sender_id, ciphertext, nonce, mac, algorithm, kind, created_at, reply_to_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (id, chat_id, sender_id, ciphertext, nonce, mac, algorithm, kind, created_at, reply_to_id,
+                             forwarded_from_sender_nickname, forwarded_from_text)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 id.toString(),
                 chatId.toString(),
@@ -112,7 +124,18 @@ public class MessageRepository {
                 algorithm,
                 kind == null || kind.isBlank() ? "text" : kind,
                 createdAt.toEpochMilli(),
-                replyToId == null ? null : replyToId.toString());
+                replyToId == null ? null : replyToId.toString(),
+                forwardedFromSenderNickname,
+                forwardedFromText);
+    }
+
+    public void updateContent(UUID messageId, String ciphertext, String nonce, String mac, Instant editedAt) {
+        jdbc.update("""
+                        UPDATE messages
+                        SET ciphertext = ?, nonce = ?, mac = ?, edited_at = ?
+                        WHERE id = ?
+                        """,
+                ciphertext, nonce, mac, editedAt.toEpochMilli(), messageId.toString());
     }
 
     public Optional<EncryptedMessage> findById(UUID messageId) {
@@ -222,6 +245,32 @@ public class MessageRepository {
                             """,
                     messageId.toString(), userId.toString());
         }
+    }
+
+    /**
+     * Все закреплённые сообщения чата, видимые зрителю ('chat' или его личный 'me'),
+     * независимо от окна последних сообщений. Скрытые для viewer пропускаются.
+     */
+    public List<EncryptedMessage> pinnedForChat(UUID chatId, UUID viewerId) {
+        return jdbc.query("""
+                        SELECT *
+                        FROM (
+                            """ + SELECT_WITH_REPLY + """
+                            WHERE m.chat_id = ?
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM message_hides h
+                                  WHERE h.message_id = m.id AND h.user_id = ?
+                              )
+                              AND EXISTS (
+                                  SELECT 1 FROM message_pins p
+                                  WHERE p.message_id = m.id
+                                    AND (p.scope = 'chat' OR (p.scope = 'me' AND p.user_id = ?))
+                              )
+                            ORDER BY m.created_at DESC, m.id DESC
+                        )
+                        ORDER BY created_at ASC, id ASC
+                        """,
+                MESSAGE_MAPPER, chatId.toString(), viewerId.toString(), viewerId.toString());
     }
 
     /** Видимые зрителю пины: 'chat' имеет приоритет над личным 'me'. */

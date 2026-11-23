@@ -92,7 +92,98 @@ public class MessageService {
         return storeMessage(actorUserId, chatId, payload, "call", createdNow(), null);
     }
 
+    /** Голосовое сообщение: текст хранит JSON с путём к файлу и длительностью. */
+    public Message sendVoice(UUID userId, UUID chatId, String voicePath, int durationSec, String rawReplyToId) {
+        if (!chats.isMember(chatId, userId)) {
+            throw ApiException.notFound();
+        }
+        if (voicePath == null || voicePath.isBlank()) {
+            throw new ValidationException(Map.of("audio", "Голосовое сообщение пустое"));
+        }
+        UUID replyToId = null;
+        if (rawReplyToId != null && !rawReplyToId.isBlank()) {
+            try {
+                replyToId = UUID.fromString(rawReplyToId.trim());
+            } catch (IllegalArgumentException e) {
+                throw new ValidationException(Map.of("replyToId", "некорректный идентификатор"));
+            }
+            MessageRepository.EncryptedMessage reply = messages.findById(replyToId)
+                    .orElseThrow(() -> new ValidationException(Map.of("replyToId", "сообщение не найдено")));
+            if (!reply.chatId().equals(chatId)) {
+                throw new ValidationException(Map.of("replyToId", "ответ только внутри этого чата"));
+            }
+        }
+        int safeDuration = Math.max(0, Math.min(durationSec, 3600));
+        String safePath = voicePath.replace("\\", "/");
+        String payload = "{\"path\":\"" + safePath.replace("\"", "") + "\",\"durationSec\":" + safeDuration + "}";
+        return storeMessage(userId, chatId, payload, "voice", createdNow(), replyToId);
+    }
+
+    @Transactional
+    public Message edit(UUID userId, UUID chatId, UUID messageId, String rawText) {
+        if (!chats.isMember(chatId, userId)) {
+            throw ApiException.notFound();
+        }
+        Validation.Checked checked = Validation.message(rawText);
+        if (checked.hasError()) {
+            throw new ValidationException(Map.of("text", checked.error()));
+        }
+        MessageRepository.EncryptedMessage stored = messages.findById(messageId)
+                .orElseThrow(ApiException::notFound);
+        if (!stored.chatId().equals(chatId)) {
+            throw ApiException.notFound();
+        }
+        if (!stored.senderId().equals(userId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Редактировать можно только свои сообщения");
+        }
+        if (!"text".equals(stored.kind())) {
+            throw new ValidationException(Map.of("message", "Редактировать можно только текстовые сообщения"));
+        }
+
+        MessageCipher.Sealed sealed = cipher.seal(checked.value());
+        Instant editedAt = Instant.now();
+        messages.updateContent(messageId, encode(sealed.ciphertext()), encode(sealed.nonce()), encode(sealed.mac()), editedAt);
+        return messages.findById(messageId)
+                .map(m -> decrypt(m, userId, null))
+                .orElseThrow(ApiException::notFound);
+    }
+
+    @Transactional
+    public Message forward(UUID userId, UUID targetChatId, UUID fromChatId, UUID messageId) {
+        if (!chats.isMember(targetChatId, userId)) {
+            throw ApiException.notFound();
+        }
+        if (!chats.isMember(fromChatId, userId)) {
+            throw ApiException.notFound();
+        }
+        MessageRepository.EncryptedMessage stored = messages.findById(messageId)
+                .orElseThrow(ApiException::notFound);
+        if (!stored.chatId().equals(fromChatId)) {
+            throw ApiException.notFound();
+        }
+
+        String originalText = openText(stored.ciphertext(), stored.nonce(), stored.mac(), stored.id(), stored.chatId());
+        if (DAMAGED_TEXT.equals(originalText)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "MESSAGE_DAMAGED", "Нельзя переслать повреждённое сообщение");
+        }
+
+        String forwardedNick = stored.senderNickname() == null ? "" : stored.senderNickname();
+        String preview = originalText;
+        if ("voice".equals(stored.kind())) {
+            preview = "Voice message";
+        } else if (preview.length() > 300) {
+            preview = preview.substring(0, 299) + "…";
+        }
+
+        return storeMessage(userId, targetChatId, originalText, stored.kind(), createdNow(), null, forwardedNick, preview);
+    }
+
     private Message storeMessage(UUID userId, UUID chatId, String text, String kind, Instant createdAt, UUID replyToId) {
+        return storeMessage(userId, chatId, text, kind, createdAt, replyToId, null, null);
+    }
+
+    private Message storeMessage(UUID userId, UUID chatId, String text, String kind, Instant createdAt, UUID replyToId,
+                                 String forwardedFromSenderNickname, String forwardedFromText) {
         MessageCipher.Sealed sealed = cipher.seal(text);
         UUID id = UUID.randomUUID();
         messages.insert(
@@ -105,7 +196,9 @@ public class MessageService {
                 MessageCipher.ALGORITHM,
                 kind,
                 createdAt,
-                replyToId
+                replyToId,
+                forwardedFromSenderNickname,
+                forwardedFromText
         );
         return messages.findById(id)
                 .map(stored -> decrypt(stored, userId, null))
@@ -124,6 +217,17 @@ public class MessageService {
         int safeLimit = Math.max(1, Math.min(limit, 100));
         Map<UUID, String> pinScopes = messages.pinScopes(chatId, userId);
         return messages.listForChat(chatId, userId, safeLimit).stream()
+                .map(stored -> decrypt(stored, userId, pinScopes.get(stored.id())))
+                .toList();
+    }
+
+    /** Закреплённые сообщения чата (все, не только из окна последних сообщений). */
+    public List<Message> pinned(UUID userId, UUID chatId) {
+        if (!chats.isMember(chatId, userId)) {
+            throw ApiException.notFound();
+        }
+        Map<UUID, String> pinScopes = messages.pinScopes(chatId, userId);
+        return messages.pinnedForChat(chatId, userId).stream()
                 .map(stored -> decrypt(stored, userId, pinScopes.get(stored.id())))
                 .toList();
     }
@@ -237,7 +341,10 @@ public class MessageService {
                 replyText,
                 stored.replySenderNickname(),
                 status,
-                pinScope
+                pinScope,
+                stored.editedAt(),
+                stored.forwardedFromSenderNickname(),
+                stored.forwardedFromText()
         );
     }
 

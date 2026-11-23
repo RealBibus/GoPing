@@ -80,6 +80,10 @@ public class DtoMapper {
                     message.replyToSenderNickname() == null ? "" : message.replyToSenderNickname()
             );
         }
+        String text = message.text();
+        if ("voice".equals(message.kind())) {
+            text = rewriteVoiceText(text);
+        }
         return new ApiDtos.MessageDto(
                 message.id().toString(),
                 message.chatId().toString(),
@@ -89,13 +93,27 @@ public class DtoMapper {
                         message.senderNickname(),
                         media.url(message.senderAvatarPath(), message.senderAvatarUrl())
                 ),
-                message.text(),
+                text,
                 message.algorithm(),
                 message.kind(),
                 message.createdAt(),
                 reply,
                 message.deliveryStatus(),
-                message.pinScope()
+                message.pinScope(),
+                message.editedAt(),
+                message.forwardedFromSenderNickname(),
+                message.forwardedFromText()
         );
+    }
+
+    private String rewriteVoiceText(String text) {
+        if (text == null) return null;
+        // payload: {"path":"/media/voice/...","durationSec":N}
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"").matcher(text);
+        if (!m.find()) return text;
+        String path = m.group(1);
+        String url = media.publicUrl(path);
+        if (url == null || url.equals(path)) return text;
+        return text.substring(0, m.start(1)) + url + text.substring(m.end(1));
     }
 }

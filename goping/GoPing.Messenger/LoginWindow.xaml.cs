@@ -121,14 +121,25 @@ public partial class LoginWindow : Window
         try
         {
             GithubStart start = await _api.StartGithubAsync(_cts.Token);
-            Process.Start(new ProcessStartInfo(start.AuthorizeUrl) { UseShellExecute = true });
+            if (string.IsNullOrWhiteSpace(start?.AuthorizeUrl) || string.IsNullOrWhiteSpace(start.State))
+                throw new InvalidOperationException("Server returned an invalid GitHub sign-in response.");
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(start.AuthorizeUrl) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Could not open the browser: " + ex.Message, ex);
+            }
+
             SetStatus("Confirm the sign-in in your browser. Waiting…", false);
 
             while (DateTimeOffset.UtcNow < start.ExpiresAt)
             {
                 await Task.Delay(1500, _cts.Token);
                 GithubPoll poll = await _api.PollGithubAsync(start.State, _cts.Token);
-                if (poll.Status == "ready" && poll.Auth is not null)
+                if (string.Equals(poll?.Status, "ready", StringComparison.OrdinalIgnoreCase) && poll?.Auth is not null)
                 {
                     SessionStore.Save(new StoredSession(null, poll.Auth.RefreshToken));
                     OpenMain(poll.Auth);
@@ -148,7 +159,8 @@ public partial class LoginWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus("Could not open the browser: " + ex.Message, true);
+            GoPing.Services.CallLogger.Error("GitHub sign-in failed", ex);
+            SetStatus(ex.Message, true);
         }
         finally
         {

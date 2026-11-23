@@ -88,6 +88,12 @@ public final class ApiDtos {
     public record SendMessageRequest(String text, String replyToId) {
     }
 
+    public record EditMessageRequest(String text) {
+    }
+
+    public record ForwardMessageRequest(String fromChatId, String messageId) {
+    }
+
     public record DeleteMessageRequest(boolean forEveryone) {
     }
 
@@ -114,7 +120,10 @@ public final class ApiDtos {
             Instant createdAt,
             ReplyPreviewDto replyTo,
             String status,
-            String pinScope
+            String pinScope,
+            Instant editedAt,
+            String forwardedFromSenderNickname,
+            String forwardedFromText
     ) {
     }
 

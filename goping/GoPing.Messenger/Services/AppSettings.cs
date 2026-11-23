@@ -8,6 +8,20 @@ public sealed class AppSettings
     public bool RaiseWindowOnIncomingCall { get; set; } = true;
     public bool ShowMessageNotifications { get; set; } = true;
     public bool MicrophonePermissionGranted { get; set; }
+    public int ScreenShareFps { get; set; } = 30;
+    public string ScreenCaptureMode { get; set; } = "Auto";
+    public string ScreenShareQuality { get; set; } = "HD";
+    public bool UseBetaUpdates { get; set; }
+
+    private string _updateGitHubRepo = UpdateService.DefaultGitHubRepo;
+    /// <summary>Репозиторий обновлений захардкожен в UpdateService; старые пустые значения чинятся сами.</summary>
+    public string UpdateGitHubRepo
+    {
+        get => _updateGitHubRepo;
+        set => _updateGitHubRepo = string.IsNullOrWhiteSpace(value)
+            ? UpdateService.DefaultGitHubRepo
+            : value.Trim();
+    }
 }
 
 public static class AppSettingsStore

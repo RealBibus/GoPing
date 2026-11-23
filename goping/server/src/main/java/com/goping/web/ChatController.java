@@ -2,6 +2,7 @@ package com.goping.web;
 
 import com.goping.domain.Message;
 import com.goping.error.ApiException;
+import com.goping.media.MediaStore;
 import com.goping.realtime.RealtimeEvents;
 import com.goping.security.RequestContext;
 import com.goping.service.ChatService;
@@ -9,15 +10,19 @@ import com.goping.service.MessageService;
 import com.goping.web.dto.ApiDtos;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.UUID;
@@ -30,15 +35,18 @@ public class ChatController {
     private final MessageService messages;
     private final DtoMapper mapper;
     private final RealtimeEvents realtime;
+    private final MediaStore media;
 
     public ChatController(ChatService chats,
                           MessageService messages,
                           DtoMapper mapper,
-                          RealtimeEvents realtime) {
+                          RealtimeEvents realtime,
+                          MediaStore media) {
         this.chats = chats;
         this.messages = messages;
         this.mapper = mapper;
         this.realtime = realtime;
+        this.media = media;
     }
 
     @GetMapping
@@ -89,6 +97,16 @@ public class ChatController {
         return new ApiDtos.MessageListResponse(items, null);
     }
 
+    /** Все закреплённые сообщения чата, видимые пользователю (для панели закреплённых). */
+    @GetMapping("/{chatId}/pins")
+    public ApiDtos.MessageListResponse pins(
+            @PathVariable String chatId,
+            HttpServletRequest request) {
+        List<Message> found = messages.pinned(RequestContext.userId(request), parseChatId(chatId));
+        List<ApiDtos.MessageDto> items = found.stream().map(mapper::message).toList();
+        return new ApiDtos.MessageListResponse(items, null);
+    }
+
     @PostMapping("/{chatId}/messages")
     public ResponseEntity<ApiDtos.MessageDto> send(
             @PathVariable String chatId,
@@ -101,6 +119,59 @@ public class ChatController {
                 RequestContext.userId(request), id, text, replyToId);
         ApiDtos.MessageDto dto = mapper.message(message);
         realtime.messageCreated(id, dto);
+        return ResponseEntity.status(HttpStatus.CREATED).body(dto);
+    }
+
+    @PostMapping(value = "/{chatId}/messages/voice", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiDtos.MessageDto> sendVoice(
+            @PathVariable String chatId,
+            @RequestPart("audio") MultipartFile audio,
+            @RequestParam(value = "durationSec", required = false, defaultValue = "0") int durationSec,
+            @RequestParam(value = "replyToId", required = false) String replyToId,
+            HttpServletRequest request) throws java.io.IOException {
+        UUID id = parseChatId(chatId);
+        String voicePath = media.saveVoice(audio);
+        try {
+            Message message = messages.sendVoice(
+                    RequestContext.userId(request), id, voicePath, durationSec, replyToId);
+            ApiDtos.MessageDto dto = mapper.message(message);
+            realtime.messageCreated(id, dto);
+            return ResponseEntity.status(HttpStatus.CREATED).body(dto);
+        } catch (RuntimeException e) {
+            media.deleteVoice(voicePath);
+            throw e;
+        }
+    }
+
+    @PatchMapping("/{chatId}/messages/{messageId}")
+    public ResponseEntity<ApiDtos.MessageDto> edit(
+            @PathVariable String chatId,
+            @PathVariable String messageId,
+            @RequestBody(required = false) ApiDtos.EditMessageRequest body,
+            HttpServletRequest request) {
+        UUID chat = parseChatId(chatId);
+        UUID msg = parseId(messageId, "сообщения");
+        String text = body == null ? null : body.text();
+        Message message = messages.edit(RequestContext.userId(request), chat, msg, text);
+        ApiDtos.MessageDto dto = mapper.message(message);
+        realtime.messageEdited(chat, dto);
+        return ResponseEntity.ok(dto);
+    }
+
+    @PostMapping("/{chatId}/messages/forward")
+    public ResponseEntity<ApiDtos.MessageDto> forward(
+            @PathVariable String chatId,
+            @RequestBody(required = false) ApiDtos.ForwardMessageRequest body,
+            HttpServletRequest request) {
+        UUID targetChat = parseChatId(chatId);
+        if (body == null || body.fromChatId() == null || body.messageId() == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "fromChatId и messageId обязательны");
+        }
+        UUID fromChat = parseId(body.fromChatId(), "исходного чата");
+        UUID msg = parseId(body.messageId(), "сообщения");
+        Message message = messages.forward(RequestContext.userId(request), targetChat, fromChat, msg);
+        ApiDtos.MessageDto dto = mapper.message(message);
+        realtime.messageCreated(targetChat, dto);
         return ResponseEntity.status(HttpStatus.CREATED).body(dto);
     }
 

@@ -260,6 +260,14 @@ public sealed class ApiClient : IDisposable
             null,
             ct);
 
+    /// <summary>All pinned messages of the chat, even older than the loaded window.</summary>
+    public Task<MessageListResponse> GetPinnedMessagesAsync(string chatId, CancellationToken ct = default)
+        => SendAuthenticatedAsync<MessageListResponse>(
+            HttpMethod.Get,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/pins",
+            null,
+            ct);
+
     /// <summary>Sends a message; the server protects it before storing it.</summary>
     public Task<ChatMessage> SendMessageAsync(
         string chatId, string text, string? replyToId = null, CancellationToken ct = default)
@@ -268,6 +276,39 @@ public sealed class ApiClient : IDisposable
             "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages",
             JsonContent.Create(new { text, replyToId }, options: JsonOptions),
             ct);
+
+    public Task<ChatMessage> EditMessageAsync(
+        string chatId, string messageId, string text, CancellationToken ct = default)
+        => SendAuthenticatedAsync<ChatMessage>(
+            HttpMethod.Patch,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages/" + Uri.EscapeDataString(messageId),
+            JsonContent.Create(new { text }, options: JsonOptions),
+            ct);
+
+    public Task<ChatMessage> ForwardMessageAsync(
+        string chatId, string fromChatId, string messageId, CancellationToken ct = default)
+        => SendAuthenticatedAsync<ChatMessage>(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages/forward",
+            JsonContent.Create(new { fromChatId, messageId }, options: JsonOptions),
+            ct);
+
+    public async Task<ChatMessage> SendVoiceAsync(
+        string chatId, byte[] audioBytes, string fileName, string contentType, int durationSec, string? replyToId = null, CancellationToken ct = default)
+    {
+        using var form = new MultipartFormDataContent();
+        var file = new ByteArrayContent(audioBytes);
+        file.Headers.ContentType = new MediaTypeHeaderValue(string.IsNullOrWhiteSpace(contentType) ? "audio/webm" : contentType);
+        form.Add(file, "audio", string.IsNullOrWhiteSpace(fileName) ? "voice.webm" : fileName);
+        form.Add(new StringContent(Math.Max(0, durationSec).ToString(System.Globalization.CultureInfo.InvariantCulture)), "durationSec");
+        if (!string.IsNullOrWhiteSpace(replyToId))
+            form.Add(new StringContent(replyToId), "replyToId");
+
+        return await SendAuthenticatedAsync<ChatMessage>(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages/voice",
+            form, ct);
+    }
 
     public Task DeleteMessageAsync(
         string chatId, string messageId, bool forEveryone, CancellationToken ct = default)

@@ -511,6 +511,7 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <Button x:Name="EmojiButton" Width="34" Height="34"
                                                 Style="{StaticResource GhostButton}"
@@ -537,9 +538,57 @@
                                         </Button>
                                         <TextBox x:Name="MessageBox" Grid.Column="1" Style="{StaticResource Field}"
                                                  MaxLength="4000" KeyDown="MessageBox_KeyDown"
-                                                
                                                  ToolTip="Enter — send, Shift+Enter — new line"/>
-                                        <Button x:Name="SendButton" Grid.Column="2"
+                                        <Border x:Name="VoiceRecordingPanel" Grid.Column="1" Visibility="Collapsed"
+                                                CornerRadius="8" Padding="12,6" Background="{DynamicResource SurfaceHoverBrush}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Ellipse x:Name="VoiceRecordingDot" Width="8" Height="8" Fill="#DA373C"
+                                                         VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                <TextBlock x:Name="VoiceRecordingText" Grid.Column="1" Text="0:00" FontSize="13"
+                                                           FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}"
+                                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                                <!-- Живая полоска частот голоса (полосы строятся в code-behind) -->
+                                                <StackPanel x:Name="VoiceWavePanel" Grid.Column="2" Orientation="Horizontal"
+                                                            VerticalAlignment="Center" Height="26" ClipToBounds="True"/>
+                                                <TextBlock Grid.Column="3" Text="Release to send" FontSize="11"
+                                                           Foreground="{DynamicResource MutedBrush}"
+                                                           VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                            </Grid>
+                                        </Border>
+                                        <Button x:Name="VoiceRecordButton" Grid.Column="2"
+                                                Style="{StaticResource GhostButton}"
+                                                Width="34" Height="34" Padding="0" Margin="8,0,0,0"
+                                                VerticalAlignment="Center" ToolTip="Hold to record a voice message"
+                                                PreviewMouseLeftButtonDown="VoiceRecordButton_PreviewDown"
+                                                PreviewMouseLeftButtonUp="VoiceRecordButton_PreviewUp">
+                                            <TextBlock Text="&#xE720;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                       Foreground="{DynamicResource MutedBrush}"/>
+                                        </Button>
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                                            <Button x:Name="VoiceCancelButton" Visibility="Collapsed"
+                                                    Style="{StaticResource GhostButton}"
+                                                    Width="34" Height="34" Padding="0"
+                                                    VerticalAlignment="Center" ToolTip="Cancel recording"
+                                                    Click="VoiceCancelButton_Click">
+                                                <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                           Foreground="#DA373C"/>
+                                            </Button>
+                                            <Button x:Name="VoiceStopButton" Visibility="Collapsed"
+                                                    Style="{StaticResource GhostButton}"
+                                                    Width="34" Height="34" Padding="0" Margin="4,0,0,0"
+                                                    VerticalAlignment="Center" ToolTip="Stop and send"
+                                                    Click="VoiceStopButton_Click">
+                                                <TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                           Foreground="#23A55A"/>
+                                            </Button>
+                                        </StackPanel>
+                                        <Button x:Name="SendButton" Grid.Column="3"
                                                 Style="{StaticResource PrimaryButton}"
                                                 Content="Send" Margin="10,0,0,0"
                                                 Click="SendButton_Click"/>
@@ -829,31 +878,129 @@
                                     Content="Close" Click="SettingsCloseButton_Click"/>
                         </Grid>
 
-                        <TabControl Grid.Row="1" Margin="40,24,40,40"
-                                    Background="Transparent" BorderThickness="0">
-                            <TabItem Header="Notifications">
-                                <StackPanel Margin="0,8,0,0" MaxWidth="560" HorizontalAlignment="Left">
-                                    <TextBlock Text="In-app notifications" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextBrush}" Margin="0,0,0,14"/>
-                                    <CheckBox x:Name="MessageNotificationsCheckBox"
-                                              Content="Show message notifications"
-                                              Foreground="{DynamicResource TextBrush}" FontSize="13"
-                                              Margin="0,0,0,10" Checked="SettingsToggle_Changed"
-                                              Unchecked="SettingsToggle_Changed"/>
-                                    <CheckBox x:Name="RaiseWindowOnCallCheckBox"
-                                              Content="Bring window to front on incoming call"
-                                              Foreground="{DynamicResource TextBrush}" FontSize="13"
-                                              Margin="0,0,0,10" Checked="SettingsToggle_Changed"
-                                              Unchecked="SettingsToggle_Changed"/>
-                                    <TextBlock Text="Call notifications are shown inside GoPing, not as Windows system notifications."
-                                               FontSize="12" Foreground="{DynamicResource MutedBrush}"
-                                               TextWrapping="Wrap" Margin="0,6,0,0"/>
-                                </StackPanel>
-                            </TabItem>
-                            <TabItem Header="Experimental features">
-                                <Grid Background="Transparent"/>
-                            </TabItem>
-                        </TabControl>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                            <StackPanel Margin="40,16,40,40" MaxWidth="640" HorizontalAlignment="Left">
+                                <Border CornerRadius="12" Padding="20" Margin="0,0,0,16"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                            <TextBlock Text="&#xEA8F;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                            <TextBlock Text="Notifications" FontSize="16" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="MessageNotificationsCheckBox"
+                                                  Content="Show message notifications"
+                                                  Foreground="{DynamicResource TextBrush}" FontSize="13"
+                                                  Margin="0,0,0,10" Checked="SettingsToggle_Changed"
+                                                  Unchecked="SettingsToggle_Changed"/>
+                                        <CheckBox x:Name="RaiseWindowOnCallCheckBox"
+                                                  Content="Bring window to front on incoming call"
+                                                  Foreground="{DynamicResource TextBrush}" FontSize="13"
+                                                  Margin="0,0,0,6" Checked="SettingsToggle_Changed"
+                                                  Unchecked="SettingsToggle_Changed"/>
+                                        <TextBlock Text="Call notifications are shown inside GoPing, not as Windows system notifications."
+                                                   FontSize="12" Foreground="{DynamicResource MutedBrush}"
+                                                   TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="12" Padding="20" Margin="0,0,0,16"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                            <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                            <TextBlock Text="Screen sharing" FontSize="16" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock Text="Demo FPS" FontSize="13"
+                                                   Foreground="{DynamicResource TextBrush}" Margin="0,0,0,8"/>
+                                        <Grid Margin="0,0,0,16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Slider x:Name="ScreenShareFpsSlider" Minimum="30" Maximum="60"
+                                                    TickFrequency="5" IsSnapToTickEnabled="True"
+                                                    ValueChanged="ScreenShareFpsSlider_ValueChanged"/>
+                                            <Border Grid.Column="1" CornerRadius="6" Padding="10,4" Margin="12,0,0,0"
+                                                    Background="{DynamicResource SurfaceHoverBrush}" VerticalAlignment="Center">
+                                                <TextBlock x:Name="ScreenShareFpsValueText" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource TextBrush}" Text="30 FPS"/>
+                                            </Border>
+                                        </Grid>
+                                        <TextBlock Text="Capture mode" FontSize="13"
+                                                   Foreground="{DynamicResource TextBrush}" Margin="0,0,0,8"/>
+                                        <ComboBox x:Name="ScreenCaptureModeCombo" Width="260" HorizontalAlignment="Left"
+                                                  SelectionChanged="ScreenCaptureModeCombo_Changed">
+                                            <ComboBoxItem Content="Auto (WGC, then GDI)" Tag="Auto"/>
+                                            <ComboBoxItem Content="WGC only" Tag="Wgc"/>
+                                            <ComboBoxItem Content="GDI only" Tag="Gdi"/>
+                                        </ComboBox>
+                                        <TextBlock Text="WGC gives better performance on supported systems. Auto falls back to GDI when WGC is unavailable."
+                                                   FontSize="12" Foreground="{DynamicResource MutedBrush}"
+                                                   TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="12" Padding="20" Margin="0,0,0,16"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                            <TextBlock Text="&#xE895;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                            <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="UpdateVersionText" FontSize="13"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,12"
+                                                   Text="Current version: 1.0.0"/>
+                                        <CheckBox x:Name="BetaUpdatesCheckBox" Content="Receive beta updates"
+                                                  Foreground="{DynamicResource TextBrush}" FontSize="13"
+                                                  Margin="0,0,0,12" Checked="BetaUpdatesCheckBox_Changed"
+                                                  Unchecked="BetaUpdatesCheckBox_Changed"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                            <Button x:Name="UpdateCheckButton" Style="{StaticResource SecondaryButton}"
+                                                    Content="Check for updates" Click="UpdateCheckButton_Click"/>
+                                            <Button x:Name="UpdateInstallButton" Style="{StaticResource PrimaryButton}"
+                                                    Content="Install update" Margin="10,0,0,0"
+                                                    Visibility="Collapsed" Click="UpdateInstallButton_Click"/>
+                                        </StackPanel>
+                                        <ProgressBar x:Name="UpdateProgressBar" Height="6" Minimum="0" Maximum="100"
+                                                     Visibility="Collapsed" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="UpdateStatusText" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap"
+                                                   Text="Updates download automatically when available. Click Install to apply and restart."/>
+                                        <TextBlock x:Name="UpdateNotesHeader" Text="Release notes" FontSize="12"
+                                                   FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}"
+                                                   Margin="0,12,0,6" Visibility="Collapsed"/>
+                                        <TextBox x:Name="UpdateNotesBox" Style="{StaticResource Field}"
+                                                 IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto" FontSize="11"
+                                                 MaxHeight="150" Visibility="Collapsed"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="12" Padding="20"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Opacity="0.75">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                       Foreground="{DynamicResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                            <TextBlock Text="Experimental features" FontSize="16" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock Text="Nothing here yet. New experimental options will appear in this section."
+                                                   FontSize="12" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
                     </Grid>
 
                     <!-- Профиль другого пользователя — боковая панель, как в Telegram -->
@@ -905,12 +1052,25 @@
                     <!-- Нижняя левая панель быстрых действий -->
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Left"
                                 VerticalAlignment="Bottom" Margin="14,0,0,14" Panel.ZIndex="10">
+                        <Button x:Name="UpdateAvailableButton" Style="{StaticResource GhostButton}"
+                                Width="30" Height="30" Padding="0" Margin="0,0,4,0"
+                                HorizontalContentAlignment="Center"
+                                FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                Foreground="{DynamicResource AccentBrush}"
+                                Content="&#xE896;" Click="UpdateAvailableButton_Click"
+                                Visibility="Collapsed" ToolTip="Update available"/>
                         <Button x:Name="SettingsButton" Style="{StaticResource GhostButton}"
                                 Width="30" Height="30" Padding="0" Margin="0,0,4,0"
                                 HorizontalContentAlignment="Center"
                                 FontFamily="Segoe MDL2 Assets" FontSize="14"
                                 Content="&#xE713;" Click="SettingsButton_Click"
                                 ToolTip="Settings"/>
+                        <Button x:Name="ConsoleToggleButton" Style="{StaticResource GhostButton}"
+                                Width="30" Height="30" Padding="0" Margin="0,0,4,0"
+                                HorizontalContentAlignment="Center"
+                                FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                Content="&#xE9D9;" Click="ConsoleToggleButton_Click"
+                                ToolTip="Console"/>
                         <Button x:Name="ThemeToggleButton" Style="{StaticResource GhostButton}"
                                 Width="30" Height="30" Padding="0"
                                 HorizontalContentAlignment="Center"
@@ -1003,7 +1163,8 @@
                                Stretch="Uniform" Visibility="Collapsed" Panel.ZIndex="0"/>
 
                         <!-- Центр: собеседник -->
-                        <StackPanel x:Name="CallPeerCenter" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <StackPanel x:Name="CallPeerCenter" Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                    MouseLeftButtonUp="CallPeerCenter_Click" Cursor="Hand" Background="Transparent" ToolTip="Click to adjust volume">
                             <Grid Width="168" Height="168" HorizontalAlignment="Center">
                                 <Border x:Name="PeerSpeakingRing"
                                         CornerRadius="84"
@@ -1054,6 +1215,43 @@
                                 </Border>
                             </StackPanel>
                         </Border>
+
+                        <!-- Регулировка громкости собеседника -->
+                        <Popup x:Name="CallPeerVolumePopup"
+                               PlacementTarget="{Binding ElementName=CallPeerCenter}"
+                               Placement="Bottom"
+                               HorizontalOffset="0"
+                               VerticalOffset="8"
+                               StaysOpen="False"
+                               AllowsTransparency="True"
+                               PopupAnimation="Fade">
+                            <Border Background="#1E1F22" BorderBrush="#3A3C42" BorderThickness="1"
+                                    CornerRadius="14" Padding="16" MinWidth="300">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.35" Color="#000000"/>
+                                </Border.Effect>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                                   Foreground="#B5BAC1" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Participant volume" FontSize="13" FontWeight="SemiBold" Foreground="#F2F3F5"/>
+                                    </StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Slider x:Name="CallPeerVolumeSlider" Minimum="0" Maximum="400" Value="100"
+                                                TickFrequency="25" IsSnapToTickEnabled="False"
+                                                ValueChanged="CallPeerVolumeSlider_ValueChanged"/>
+                                        <TextBlock x:Name="CallPeerVolumeValueText" Grid.Column="1" Margin="12,0,0,0"
+                                                   MinWidth="44" TextAlignment="Right"
+                                                   FontSize="12" FontWeight="SemiBold" Foreground="#F2F3F5" Text="100%"/>
+                                    </Grid>
+                                    <TextBlock Text="0% - 400%" Margin="0,8,0,0" FontSize="11" Foreground="#949BA4"/>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
 
                         <!-- Маленький индикатор себя -->
                         <Border Grid.Row="0" HorizontalAlignment="Right" VerticalAlignment="Bottom"
@@ -1228,6 +1426,49 @@
                                    Text="Short connection drops recover silently."
                                    FontSize="11" Foreground="#949BA4"
                                    TextAlignment="Center"/>
+
+                        <Popup x:Name="CallShareSettingsPopup"
+                               PlacementTarget="{Binding ElementName=CallShareButton}"
+                               Placement="Top"
+                               StaysOpen="False"
+                               AllowsTransparency="True"
+                               PopupAnimation="Fade">
+                            <Border Background="#1E1F22" BorderBrush="#3A3C42" BorderThickness="1"
+                                    CornerRadius="14" Padding="16" MinWidth="300">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.35" Color="#000000"/>
+                                </Border.Effect>
+                                <StackPanel>
+                                    <TextBlock Text="Screen share" FontSize="13" FontWeight="SemiBold" Foreground="#F2F3F5"/>
+                                    <TextBlock Text="Quality" Margin="0,12,0,6" FontSize="12" Foreground="#B5BAC1"/>
+                                    <ComboBox x:Name="CallShareQualityCombo" SelectionChanged="CallShareQualityCombo_Changed">
+                                        <ComboBoxItem Content="Standard (960p)" Tag="Standard"/>
+                                        <ComboBoxItem Content="High (1280p)" Tag="High"/>
+                                        <ComboBoxItem Content="HD (1600p)" Tag="HD"/>
+                                        <ComboBoxItem Content="Full HD (1920p)" Tag="FullHD"/>
+                                    </ComboBox>
+                                    <Grid Margin="0,12,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="FPS" FontSize="12" Foreground="#B5BAC1" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="CallShareFpsValueText" Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#F2F3F5" Text="30 FPS"/>
+                                    </Grid>
+                                    <Slider x:Name="CallShareFpsSlider" Margin="0,6,0,0" Minimum="30" Maximum="60"
+                                            TickFrequency="5" IsSnapToTickEnabled="True"
+                                            ValueChanged="CallShareFpsSlider_ValueChanged"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0" HorizontalAlignment="Right">
+                                        <Button x:Name="CallSharePopupStopButton" Content="Stop sharing" Margin="0,0,8,0"
+                                                Padding="12,6" Visibility="Collapsed" Click="CallSharePopupStopButton_Click"
+                                                Background="#2B2D31" Foreground="#F2F3F5" BorderBrush="#3A3C42"/>
+                                        <Button x:Name="CallSharePopupStartButton" Content="Choose screen" Padding="12,6"
+                                                Click="CallSharePopupStartButton_Click"
+                                                Background="#5865F2" Foreground="White" BorderBrush="#5865F2"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
                     </Grid>
 
                 </Grid>
@@ -1359,6 +1600,14 @@
                                 Style="{StaticResource MessageActionButton}"
                                 Tag="&#xE8CA;" Content="Reply"
                                 Click="MessageActionReply_Click"/>
+                        <Button x:Name="MessageEditButton"
+                                Style="{StaticResource MessageActionButton}"
+                                Tag="&#xE70F;" Content="Edit"
+                                Click="MessageActionEdit_Click"/>
+                        <Button x:Name="MessageForwardButton"
+                                Style="{StaticResource MessageActionButton}"
+                                Tag="&#xE72A;" Content="Forward"
+                                Click="MessageActionForward_Click"/>
                         <Button x:Name="MessagePinButton"
                                 Style="{StaticResource MessageActionButton}"
                                 Tag="&#xE718;" Content="Pin"
@@ -1407,6 +1656,21 @@
                                 Style="{StaticResource MessageActionButton}"
                                 Tag="&#xE72B;" Content="Back"
                                 Click="MessageActionPinCancel_Click"/>
+                    </StackPanel>
+
+                    <!-- Пересылка: выбор чата -->
+                    <StackPanel x:Name="MessageActionsForwardPanel" Grid.Row="2"
+                                Visibility="Collapsed">
+                        <TextBlock Text="Select chat" Margin="16,8,16,6" FontSize="11"
+                                   Foreground="{DynamicResource FaintBrush}"/>
+                        <ListBox x:Name="MessageForwardList" MaxHeight="220" Margin="6,0,6,6"
+                                 Background="Transparent" BorderThickness="0"
+                                 Foreground="{DynamicResource TextBrush}"
+                                 SelectionChanged="MessageForwardList_SelectionChanged"/>
+                        <Button x:Name="MessageForwardCancelButton"
+                                Style="{StaticResource MessageActionButton}"
+                                Tag="&#xE72B;" Content="Back"
+                                Click="MessageActionForwardCancel_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -1552,6 +1816,12 @@
             </Border>
         </Grid>
 
+        <!-- WebView2 для записи голосовых: живой слой окна (не Collapsed), иначе микрофон не стартует -->
+        <Border Width="1" Height="1" Opacity="0" HorizontalAlignment="Left" VerticalAlignment="Top"
+                IsHitTestVisible="False" Panel.ZIndex="-100">
+            <wv2:WebView2 x:Name="VoiceRecorderWebView" IsHitTestVisible="False" Focusable="False"/>
+        </Border>
+
         <!-- Заливка всего окна цветом новой темы -->
         <Border x:Name="ThemeOverlay" CornerRadius="10"
                 IsHitTestVisible="False" Panel.ZIndex="100" Visibility="Collapsed">
@@ -1566,6 +1836,54 @@
                     <GradientStop x:Name="ThemeFillEnd" Offset="1" Color="Transparent"/>
                 </LinearGradientBrush>
             </Border.OpacityMask>
+        </Border>
+
+        <!-- Внутренняя консоль: действия мессенджера, ошибки, запуск сервера/TURN/Radmin -->
+        <Border x:Name="ConsolePanel" Visibility="Collapsed" Panel.ZIndex="200"
+                Margin="16" CornerRadius="12" Background="{DynamicResource BgBrush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+            <Grid Margin="18">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Messenger console" FontSize="17" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextBrush}"/>
+                <TextBlock x:Name="ConsoleHintText" Grid.Row="1" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{DynamicResource MutedBrush}" Margin="0,8,0,12"
+                           Text="This console shows what GoPing is doing and all errors. Full log: %LOCALAPPDATA%\GoPing\app-console.log"/>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Content="Start server + TURN" Style="{StaticResource SecondaryButton}"
+                            Click="ConsoleStartServerButton_Click"/>
+                    <Button Content="Start TURN" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Click="ConsoleStartTurnButton_Click"/>
+                    <Button Content="Start Radmin VPN" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Click="ConsoleStartRadminButton_Click"/>
+                </StackPanel>
+                <TextBox x:Name="ConsoleOutput" Grid.Row="3" IsReadOnly="True" AcceptsReturn="True"
+                         TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto"
+                         VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="11"
+                         Padding="10" Background="{DynamicResource SurfaceBrush}"
+                         Foreground="{DynamicResource TextBrush}"
+                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"/>
+                <Grid Grid.Row="4" Margin="0,12,0,0">
+                    <TextBlock x:Name="ConsoleStatusText" HorizontalAlignment="Left"
+                               VerticalAlignment="Center" FontSize="12"
+                               Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap"
+                               MaxWidth="520"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Clear" Style="{StaticResource GhostButton}"
+                                Margin="0,0,8,0" Click="ConsoleClearButton_Click"/>
+                        <Button Content="Copy" Style="{StaticResource GhostButton}"
+                                Margin="0,0,8,0" Click="ConsoleCopyButton_Click"/>
+                        <Button Content="Close" Style="{StaticResource SecondaryButton}"
+                                Click="ConsoleCloseButton_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Grid>
         </Border>
     </Grid>
 </Window>

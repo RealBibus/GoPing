@@ -36,9 +36,11 @@ public partial class MainWindow : Window
     private IReadOnlyList<ChatSummary> _chats = Array.Empty<ChatSummary>();
     private ChatSummary? _favoritesChat;
     private IReadOnlyList<ChatMessage> _messages = Array.Empty<ChatMessage>();
+    private IReadOnlyList<ChatMessage> _pinnedMessages = Array.Empty<ChatMessage>();
     private string? _selectedChatId;
     private ChatSummary? _selectedChat;
     private ChatMessage? _replyingTo;
+    private ChatMessage? _editingMessage;
     private ChatMessage? _popupMessage;
     private Point _popupScreenAnchor;
     private string _messageSignature = string.Empty;
@@ -74,6 +76,22 @@ public partial class MainWindow : Window
     private int _emojiPage;
     private bool _unicodeEmojiTab;
     private int _unicodeCategory;
+    private bool _voiceRecorderReady;
+    private bool _voiceRecorderInitializing;
+    private bool _voiceRecording;
+    private TaskCompletionSource<(bool Ok, byte[] Bytes, string Mime, int DurationSec, string? Error)>? _voiceRecordTcs;
+    private readonly System.Windows.Media.MediaPlayer _voicePlayer = new();
+    private Button? _activeVoiceButton;
+    private string? _activeVoiceUrl;
+    private bool _voiceHoldActive;
+    private int _lastVoiceRecordMs;
+    private DateTime _voiceRecordStartedAt;
+    private readonly DispatcherTimer _voiceRecordTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly List<System.Windows.Shapes.Rectangle> _voiceBars = new();
+    private readonly DispatcherTimer _voicePlayTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private System.Windows.Controls.StackPanel? _activeVoiceBars;
+    private UpdateInfo? _pendingUpdate;
+    private bool _updateBusy;
 
     public MainWindow(ApiClient api, UserProfile user)
     {
@@ -89,6 +107,9 @@ public partial class MainWindow : Window
             _api,
             json => _realtime.SendAsync(json),
             callId => _realtime.DropPendingSignals(callId));
+        _calls.ScreenShareFps = Math.Clamp(_appSettings.ScreenShareFps, 30, 60);
+        _calls.ScreenCaptureMode = NormalizeScreenCaptureMode(_appSettings.ScreenCaptureMode);
+        _calls.ScreenShareQuality = NormalizeScreenShareQuality(_appSettings.ScreenShareQuality);
         _calls.Incoming += OnCallIncoming;
         _calls.StateChanged += OnCallStateChanged;
         _calls.SpeakingChanged += OnCallSpeakingChanged;
@@ -109,6 +130,15 @@ public partial class MainWindow : Window
         };
         _callDurationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _callDurationTimer.Tick += (_, _) => UpdateCallDurationText();
+        _voiceRecordTimer.Tick += (_, _) =>
+        {
+            double sec = (DateTime.UtcNow - _voiceRecordStartedAt).TotalSeconds;
+            if (VoiceRecordingText is not null)
+                VoiceRecordingText.Text = $"{(int)sec / 60}:{(int)sec % 60:00}";
+            if (VoiceRecordingDot is not null)
+                VoiceRecordingDot.Opacity = VoiceRecordingDot.Opacity > 0.6 ? 0.3 : 1.0;
+        };
+        _voicePlayTimer.Tick += (_, _) => UpdateVoicePlaybackProgress();
         _userSearchTimer.Tick += async (_, _) =>
         {
             _userSearchTimer.Stop();
@@ -142,12 +172,19 @@ public partial class MainWindow : Window
             FadeIn(ChatPanel);
             _refreshTimer.Start();
             _realtime.Start();
+            AppLog.Info("Main window ready.");
+            HostControlService.StartRadminIfNeeded();
+            _ = LogServerStatusAsync();
+            _ = WarmUpVoiceRecorderAsync();
+            _ = CheckForUpdatesSilentAsync();
         };
         Closed += (_, _) =>
         {
             _refreshTimer.Stop();
             _callHideTimer.Stop();
             _realtime.Dispose();
+            AppLog.Added -= OnAppLogAdded;
+            AppLog.Info("GoPing window closed.");
         };
     }
 
@@ -1005,6 +1042,7 @@ public partial class MainWindow : Window
     {
         _pendingMessages.Clear();
         _messages = Array.Empty<ChatMessage>();
+        _pinnedMessages = Array.Empty<ChatMessage>();
         _messageSignature = string.Empty;
         _readSignature = string.Empty;
         CloseMessageActions();
@@ -1013,6 +1051,7 @@ public partial class MainWindow : Window
         PinnedList.ItemsSource = null;
         PinnedBar.Visibility = Visibility.Collapsed;
         ClearReply();
+        ClearEdit();
         UpdateCallButton();
     }
 
@@ -1067,7 +1106,7 @@ public partial class MainWindow : Window
 
             PrunePendingDuplicates(response.Items);
             _messages = response.Items;
-            RenderPinnedBar();
+            await RefreshPinnedBarAsync(chatId);
 
             string signature = BuildMessageSignature(response.Items);
             if (signature != _messageSignature)
@@ -1093,10 +1132,29 @@ public partial class MainWindow : Window
         => string.Join("|", messages.Select(m =>
             $"{m.Id};{m.Status};{m.PinScope};{m.ReplyTo?.Id};{m.Text.Length};{m.Text}"));
 
+    private async Task RefreshPinnedBarAsync(string chatId)
+    {
+        try
+        {
+            // Отдельный endpoint: закреплённые видны даже если они старше
+            // загруженного окна последних сообщений.
+            MessageListResponse pins = await _api.GetPinnedMessagesAsync(chatId);
+            if (_selectedChatId != chatId) return;
+            _pinnedMessages = pins.Items;
+        }
+        catch
+        {
+            // Запасной вариант: пины из загруженного окна (старый сервер без /pins).
+            _pinnedMessages = _messages
+                .Where(m => !string.IsNullOrWhiteSpace(m.PinScope))
+                .ToList();
+        }
+        RenderPinnedBar();
+    }
+
     private void RenderPinnedBar()
     {
-        List<ChatMessage> pinned = _messages
-            .Where(m => !string.IsNullOrWhiteSpace(m.PinScope))
+        List<ChatMessage> pinned = _pinnedMessages
             .OrderByDescending(m => m.CreatedAt)
             .ToList();
         PinnedList.ItemsSource = pinned;
@@ -1111,6 +1169,10 @@ public partial class MainWindow : Window
         {
             element.BringIntoView();
         }
+        else
+        {
+            SetChatStatus("Pinned message is older than the loaded history", false);
+        }
     }
 
     private void PrunePendingDuplicates(IReadOnlyList<ChatMessage> remoteMessages)
@@ -1124,6 +1186,36 @@ public partial class MainWindow : Window
                 pending.Text == message.Text
                 && Math.Abs((pending.CreatedAt - message.CreatedAt).TotalSeconds) < 30);
         }
+    }
+
+    private void UpsertMessage(ChatMessage updated)
+    {
+        var list = _messages.ToList();
+        int idx = list.FindIndex(m => string.Equals(m.Id, updated.Id, StringComparison.Ordinal));
+        if (idx >= 0) list[idx] = updated;
+        else list.Add(updated);
+        _messages = list;
+        _messageSignature = string.Empty;
+        RenderMessages();
+
+        // Держим панель закреплённых синхронной (например, после редактирования).
+        var pinned = _pinnedMessages.ToList();
+        int pidx = pinned.FindIndex(m => string.Equals(m.Id, updated.Id, StringComparison.Ordinal));
+        if (pidx >= 0)
+        {
+            if (string.IsNullOrWhiteSpace(updated.PinScope)) pinned.RemoveAt(pidx);
+            else pinned[pidx] = updated;
+        }
+        else if (!string.IsNullOrWhiteSpace(updated.PinScope))
+        {
+            pinned.Add(updated);
+        }
+        else
+        {
+            return;
+        }
+        _pinnedMessages = pinned;
+        RenderPinnedBar();
     }
 
     private void RenderMessages()
@@ -1271,6 +1363,20 @@ public partial class MainWindow : Window
 
             var content = new StackPanel();
 
+            if (message.IsForwarded)
+            {
+                var fwd = new TextBlock
+                {
+                    Text = "Forwarded from " + (string.IsNullOrWhiteSpace(message.ForwardedFromSenderNickname) ? "user" : message.ForwardedFromSenderNickname),
+                    FontSize = 11,
+                    FontStyle = FontStyles.Italic,
+                    Margin = new Thickness(0, 0, 0, 4),
+                    Opacity = 0.85
+                };
+                fwd.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "AccentBrush");
+                content.Children.Add(fwd);
+            }
+
             if (message.ReplyTo is not null)
             {
                 var quote = new Border
@@ -1298,7 +1404,7 @@ public partial class MainWindow : Window
 
                 var quoteText = new TextBlock
                 {
-                    Text = Shorten(message.ReplyTo.Text, 120),
+                    Text = Shorten(ReplyPreviewDisplayText(message.ReplyTo.Text), 120),
                     FontSize = 11,
                     Opacity = 0.75,
                     TextTrimming = TextTrimming.CharacterEllipsis
@@ -1311,26 +1417,33 @@ public partial class MainWindow : Window
                 content.Children.Add(quote);
             }
 
-            var text = new TextBlock
+            if (message.IsVoice)
             {
-                TextWrapping = TextWrapping.Wrap,
-                FontSize = 14
-            };
-            text.SetResourceReference(
-                TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "TextBrush");
-            if (message.IsCall)
-            {
-                text.Inlines.Add(new System.Windows.Documents.Run("📞 ") { FontSize = 14 });
-                text.Inlines.Add(new System.Windows.Documents.Run(FormatCallMessage(message)));
+                content.Children.Add(BuildVoiceContent(message, own));
             }
             else
             {
-                foreach (var inline in EmojiCatalog.BuildInlines(message.Text))
+                var text = new TextBlock
                 {
-                    text.Inlines.Add(inline);
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 14
+                };
+                text.SetResourceReference(
+                    TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "TextBrush");
+                if (message.IsCall)
+                {
+                    text.Inlines.Add(new System.Windows.Documents.Run("📞 ") { FontSize = 14 });
+                    text.Inlines.Add(new System.Windows.Documents.Run(FormatCallMessage(message)));
                 }
+                else
+                {
+                    foreach (var inline in EmojiCatalog.BuildInlines(message.Text))
+                    {
+                        text.Inlines.Add(inline);
+                    }
+                }
+                content.Children.Add(text);
             }
-            content.Children.Add(text);
 
             var footer = new StackPanel
             {
@@ -1358,7 +1471,7 @@ public partial class MainWindow : Window
 
             var time = new TextBlock
             {
-                Text = message.CreatedAt.ToLocalTime().ToString("HH:mm"),
+                Text = message.CreatedAt.ToLocalTime().ToString("HH:mm") + (message.EditedAt.HasValue ? " edited" : string.Empty),
                 FontSize = 10,
                 Opacity = own ? 0.7 : 1.0
             };
@@ -1390,6 +1503,22 @@ public partial class MainWindow : Window
     {
         string oneLine = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
         return oneLine.Length <= maxLength ? oneLine : oneLine[..(maxLength - 1)] + "…";
+    }
+
+    private static string MessageDisplayText(ChatMessage message)
+    {
+        if (message.IsVoice) return "Voice message";
+        if (message.IsCall) return FormatCallMessage(message);
+        return message.Text ?? "";
+    }
+
+    private static string ReplyPreviewDisplayText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        string t = text.TrimStart();
+        if (t.StartsWith("{", StringComparison.Ordinal) && t.Contains("\"durationSec\"", StringComparison.Ordinal) && (t.Contains("\"path\"", StringComparison.Ordinal) || t.Contains("\"url\"", StringComparison.Ordinal)))
+            return "Voice message";
+        return text;
     }
 
     private sealed record CallLogInfo(string Status, long DurationSec, string Who);
@@ -1427,8 +1556,146 @@ public partial class MainWindow : Window
         };
     }
 
+    private UIElement BuildVoiceContent(ChatMessage message, bool own)
+    {
+        var vp = message.ParseVoice();
+        string url = vp?.Url ?? "";
+        if (!string.IsNullOrWhiteSpace(url) && url.StartsWith("/media/", StringComparison.OrdinalIgnoreCase))
+            url = _api.BaseUrl.TrimEnd('/') + url;
+        int dur = vp?.DurationSec ?? 0;
+
+        var grid = new Grid { MinWidth = 180 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var btn = new Button
+        {
+            Width = 34, Height = 34,
+            Margin = new Thickness(0, 0, 10, 0),
+            Padding = new Thickness(0),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            Tag = url,
+            Content = new TextBlock { Text = "\uE768", FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+        };
+        btn.SetResourceReference(Control.ForegroundProperty, own ? "PrimaryForegroundBrush" : "TextBrush");
+        btn.SetResourceReference(Control.BackgroundProperty, own ? "PrimaryBrush" : "SurfaceHoverBrush");
+        btn.BorderThickness = new Thickness(0);
+        btn.Click += (_, _) => ToggleVoicePlayback(btn, url);
+
+        // Декоративная волна, детерминированная по id сообщения
+        var wave = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Height = 22
+        };
+        int seed = 17;
+        foreach (char c in message.Id) seed = seed * 31 + c;
+        var rnd = new Random(seed);
+        for (int i = 0; i < 32; i++)
+        {
+            double h = 4 + rnd.NextDouble() * 16;
+            var bar = new System.Windows.Shapes.Rectangle
+            {
+                Width = 2.5,
+                Height = h,
+                RadiusX = 1.25,
+                RadiusY = 1.25,
+                Margin = new Thickness(0, 0, 2, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = 0.45
+            };
+            bar.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, own ? "PrimaryForegroundBrush" : "AccentBrush");
+            wave.Children.Add(bar);
+        }
+        btn.Tag = wave;
+
+        var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        var sub = new TextBlock { Text = dur > 0 ? FormatDuration(dur) : "Audio", FontSize = 11, Margin = new Thickness(0, 3, 0, 0) };
+        sub.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "MutedBrush");
+        if (own) sub.Opacity = 0.85;
+        stack.Children.Add(wave);
+        stack.Children.Add(sub);
+
+        Grid.SetColumn(btn, 0);
+        Grid.SetColumn(stack, 1);
+        grid.Children.Add(btn);
+        grid.Children.Add(stack);
+        return grid;
+    }
+
+    private void UpdateVoicePlaybackProgress()
+    {
+        if (_activeVoiceBars is null) return;
+        if (!_voicePlayer.NaturalDuration.HasTimeSpan) return;
+        double total = _voicePlayer.NaturalDuration.TimeSpan.TotalSeconds;
+        if (total <= 0) return;
+        double ratio = Math.Clamp(_voicePlayer.Position.TotalSeconds / total, 0, 1);
+        int count = _activeVoiceBars.Children.Count;
+        int played = (int)(ratio * count);
+        for (int i = 0; i < count; i++)
+            if (_activeVoiceBars.Children[i] is System.Windows.Shapes.Rectangle bar)
+                bar.Opacity = i < played ? 1.0 : 0.45;
+    }
+
+    private void ResetVoicePlaybackVisual()
+    {
+        _voicePlayTimer.Stop();
+        if (_activeVoiceBars is not null)
+            foreach (var child in _activeVoiceBars.Children)
+                if (child is System.Windows.Shapes.Rectangle bar) bar.Opacity = 0.45;
+        _activeVoiceBars = null;
+    }
+
+    private void ToggleVoicePlayback(Button btn, string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        try
+        {
+            if (string.Equals(_activeVoiceUrl, url, StringComparison.OrdinalIgnoreCase))
+            {
+                _voicePlayer.Stop();
+                if (_activeVoiceButton is not null)
+                    ((TextBlock)_activeVoiceButton.Content).Text = "\uE768";
+                ResetVoicePlaybackVisual();
+                _activeVoiceButton = null;
+                _activeVoiceUrl = null;
+                return;
+            }
+
+            if (_activeVoiceButton is not null)
+                ((TextBlock)_activeVoiceButton.Content).Text = "\uE768";
+            ResetVoicePlaybackVisual();
+
+            _voicePlayer.Stop();
+            _voicePlayer.Open(new Uri(url));
+            _voicePlayer.Play();
+            _activeVoiceUrl = url;
+            _activeVoiceButton = btn;
+            _activeVoiceBars = btn.Tag as System.Windows.Controls.StackPanel;
+            ((TextBlock)btn.Content).Text = "\uE769";
+            _voicePlayer.MediaEnded -= VoicePlayer_MediaEnded;
+            _voicePlayer.MediaEnded += VoicePlayer_MediaEnded;
+            _voicePlayTimer.Start();
+        }
+        catch { }
+    }
+
+    private void VoicePlayer_MediaEnded(object? sender, EventArgs e)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (_activeVoiceButton is not null)
+                ((TextBlock)_activeVoiceButton.Content).Text = "\uE768";
+            ResetVoicePlaybackVisual();
+            _activeVoiceButton = null;
+            _activeVoiceUrl = null;
+        });
+    }
+
     private UIElement BuildCallLogRow(ChatMessage message)
     {
+        bool own = message.Sender.Id == _user.Id;
         CallLogInfo info = ParseCallLog(message);
         bool missed = info.Status is "missed" or "cancelled" or "declined";
         string title = info.Status switch
@@ -1444,24 +1711,66 @@ public partial class MainWindow : Window
             _ => info.DurationSec > 0 ? $"Duration {FormatDuration(info.DurationSec)}" : $"With {info.Who}"
         };
 
-        var outer = new StackPanel
+        var row = new StackPanel
         {
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 6, 0, 14),
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = own ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 0, 10),
             ToolTip = "Right-click for actions"
         };
-        outer.MouseRightButtonUp += (_, e) => ShowMessageActions(e, message);
+        row.MouseRightButtonUp += (_, e) => ShowMessageActions(e, message);
+
+        if (!own)
+        {
+            var avatarRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            var avatarGrid = new Grid { Width = 26, Height = 26, Margin = new Thickness(0, 0, 8, 0) };
+            var avatarBg = new Ellipse { Width = 26, Height = 26 };
+            avatarBg.SetResourceReference(Shape.FillProperty, "SurfaceHoverBrush");
+            avatarGrid.Children.Add(avatarBg);
+            string nick = message.Sender.Nickname?.Trim() ?? "?";
+            var initial = new TextBlock
+            {
+                Text = nick.Length == 0 ? "?" : System.Globalization.StringInfo.GetNextTextElement(nick).ToUpperInvariant(),
+                FontSize = 11, FontWeight = FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            };
+            initial.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+            avatarGrid.Children.Add(initial);
+            if (!string.IsNullOrWhiteSpace(message.Sender.AvatarUrl))
+            {
+                try
+                {
+                    var avatar = new Image
+                    {
+                        Width = 26, Height = 26, Stretch = Stretch.UniformToFill,
+                        Source = new BitmapImage(new Uri(message.Sender.AvatarUrl)),
+                        Clip = new EllipseGeometry(new Point(13, 13), 13, 13)
+                    };
+                    avatarGrid.Children.Add(avatar);
+                }
+                catch { }
+            }
+            avatarRow.Children.Add(avatarGrid);
+            var sender = new TextBlock { Text = message.Sender.Nickname, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+            sender.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+            avatarRow.Children.Add(sender);
+            row.Children.Add(avatarRow);
+        }
 
         var card = new Border
         {
-            CornerRadius = new CornerRadius(14),
-            Padding = new Thickness(14, 10, 16, 10),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12, 10, 14, 10),
             BorderThickness = new Thickness(1),
-            MinWidth = 220,
-            MaxWidth = 360
+            MinWidth = 200,
+            MaxWidth = 340
         };
-        card.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
-        card.SetResourceReference(Border.BorderBrushProperty, "BorderBrush");
+        card.SetResourceReference(Border.BackgroundProperty, own ? "PrimaryBrush" : "SurfaceBrush");
+        card.SetResourceReference(Border.BorderBrushProperty, own ? "PrimaryBrush" : "BorderBrush");
 
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1469,63 +1778,50 @@ public partial class MainWindow : Window
 
         var iconWrap = new Border
         {
-            Width = 34,
-            Height = 34,
-            CornerRadius = new CornerRadius(17),
-            Margin = new Thickness(0, 0, 12, 0),
-            VerticalAlignment = VerticalAlignment.Center
+            Width = 32, Height = 32, CornerRadius = new CornerRadius(16),
+            Margin = new Thickness(0, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center
         };
         iconWrap.Background = new SolidColorBrush(missed
-            ? Color.FromArgb(40, 218, 55, 60)
-            : Color.FromArgb(40, 35, 165, 90));
+            ? Color.FromArgb(45, 218, 55, 60)
+            : Color.FromArgb(45, 35, 165, 90));
         var icon = new TextBlock
         {
-            Text = missed ? "\uE717" : "\uE717",
+            Text = "\uE717",
             FontFamily = new FontFamily("Segoe MDL2 Assets"),
-            FontSize = 15,
+            FontSize = 14,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = missed ? new RotateTransform(135) : new RotateTransform(0)
         };
-        icon.Foreground = new SolidColorBrush(missed
-            ? Color.FromRgb(218, 55, 60)
-            : Color.FromRgb(35, 165, 90));
+        icon.Foreground = new SolidColorBrush(missed ? Color.FromRgb(255, 107, 107) : Color.FromRgb(87, 242, 135));
         iconWrap.Child = icon;
         Grid.SetColumn(iconWrap, 0);
         grid.Children.Add(iconWrap);
 
         var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(stack, 1);
-        var titleBlock = new TextBlock
-        {
-            Text = title,
-            FontSize = 13,
-            FontWeight = FontWeights.SemiBold
-        };
-        titleBlock.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
-        var subBlock = new TextBlock
-        {
-            Text = subtitle,
-            FontSize = 12,
-            Margin = new Thickness(0, 2, 0, 0)
-        };
-        subBlock.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+        var titleBlock = new TextBlock { Text = title, FontSize = 13, FontWeight = FontWeights.SemiBold };
+        titleBlock.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "TextBrush");
+        var subBlock = new TextBlock { Text = subtitle, FontSize = 12, Margin = new Thickness(0, 2, 0, 0) };
+        subBlock.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "MutedBrush");
+        if (own) subBlock.Opacity = 0.85;
         var timeBlock = new TextBlock
         {
             Text = message.CreatedAt.ToLocalTime().ToString("HH:mm"),
-            FontSize = 10,
-            Margin = new Thickness(0, 4, 0, 0)
+            FontSize = 10, Margin = new Thickness(0, 4, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right
         };
-        timeBlock.SetResourceReference(TextBlock.ForegroundProperty, "FaintBrush");
+        timeBlock.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "FaintBrush");
+        if (own) timeBlock.Opacity = 0.75;
         stack.Children.Add(titleBlock);
         stack.Children.Add(subBlock);
         stack.Children.Add(timeBlock);
         grid.Children.Add(stack);
 
         card.Child = grid;
-        outer.Children.Add(card);
-        return outer;
+        row.Children.Add(card);
+        return row;
     }
 
     private static string FormatDuration(long sec)
@@ -1554,10 +1850,17 @@ public partial class MainWindow : Window
         _popupMessage = message;
         _popupScreenAnchor = PointToScreen(e.GetPosition(this));
 
+        bool isLocal = message.Id.StartsWith("local:", StringComparison.Ordinal);
+        bool isOwn = string.Equals(message.Sender.Id, _user.Id, StringComparison.Ordinal);
+        bool canEdit = isOwn && !isLocal && !message.IsCall && !message.IsVoice;
+
+        MessageEditButton.Visibility = canEdit ? Visibility.Visible : Visibility.Collapsed;
+        MessageForwardButton.Visibility = !isLocal ? Visibility.Visible : Visibility.Collapsed;
+
         bool canDelete = CanDeleteMessage(message);
         MessageDeleteButton.Visibility = canDelete ? Visibility.Visible : Visibility.Collapsed;
 
-        bool canPin = !message.Id.StartsWith("local:", StringComparison.Ordinal);
+        bool canPin = !isLocal;
         MessagePinButton.Visibility = canPin ? Visibility.Visible : Visibility.Collapsed;
 
         ShowMessageActionsView();
@@ -1569,10 +1872,13 @@ public partial class MainWindow : Window
         MessageActionsMainPanel.Visibility = Visibility.Visible;
         MessageActionsDeletePanel.Visibility = Visibility.Collapsed;
         MessageActionsPinPanel.Visibility = Visibility.Collapsed;
+        MessageActionsForwardPanel.Visibility = Visibility.Collapsed;
         MessageActionsHeading.Text = "MESSAGE ACTIONS";
 
         int actions = 0;
         if (MessageReplyButton.Visibility == Visibility.Visible) actions++;
+        if (MessageEditButton.Visibility == Visibility.Visible) actions++;
+        if (MessageForwardButton.Visibility == Visibility.Visible) actions++;
         if (MessagePinButton.Visibility == Visibility.Visible) actions++;
         if (MessageDeleteButton.Visibility == Visibility.Visible) actions++;
         MessageActionsPopup.Height = 48 + (42 * actions);
@@ -1584,6 +1890,7 @@ public partial class MainWindow : Window
         MessageActionsMainPanel.Visibility = Visibility.Collapsed;
         MessageActionsDeletePanel.Visibility = Visibility.Visible;
         MessageActionsPinPanel.Visibility = Visibility.Collapsed;
+        MessageActionsForwardPanel.Visibility = Visibility.Collapsed;
         MessageActionsHeading.Text = "DELETE MESSAGE";
         MessageActionsPopup.Height = 174;
         PositionMessageActions();
@@ -1595,6 +1902,7 @@ public partial class MainWindow : Window
         MessageActionsMainPanel.Visibility = Visibility.Collapsed;
         MessageActionsDeletePanel.Visibility = Visibility.Collapsed;
         MessageActionsPinPanel.Visibility = Visibility.Visible;
+        MessageActionsForwardPanel.Visibility = Visibility.Collapsed;
         MessageActionsHeading.Text = "PIN MESSAGE";
 
         MessagePinForMeButton.Visibility = scope is null ? Visibility.Visible : Visibility.Collapsed;
@@ -1607,6 +1915,23 @@ public partial class MainWindow : Window
         if (MessagePinForChatButton.Visibility == Visibility.Visible) actions++;
         if (MessageUnpinButton.Visibility == Visibility.Visible) actions++;
         MessageActionsPopup.Height = 48 + (42 * actions);
+        PositionMessageActions();
+    }
+
+    private void ShowForwardView()
+    {
+        MessageActionsMainPanel.Visibility = Visibility.Collapsed;
+        MessageActionsDeletePanel.Visibility = Visibility.Collapsed;
+        MessageActionsPinPanel.Visibility = Visibility.Collapsed;
+        MessageActionsForwardPanel.Visibility = Visibility.Visible;
+        MessageActionsHeading.Text = "FORWARD MESSAGE";
+
+        var targets = _chats.Where(c => c.Id != _selectedChatId).ToList();
+        MessageForwardList.ItemsSource = targets.Select(c => c.Title).ToList();
+        MessageForwardList.Tag = targets;
+        MessageForwardList.SelectedIndex = -1;
+
+        MessageActionsPopup.Height = Math.Min(360, 110 + (targets.Count * 32));
         PositionMessageActions();
     }
 
@@ -1659,6 +1984,50 @@ public partial class MainWindow : Window
     private void MessageActionPinCancel_Click(object sender, RoutedEventArgs e)
         => ShowMessageActionsView();
 
+    private void MessageActionEdit_Click(object sender, RoutedEventArgs e)
+    {
+        ChatMessage? message = _popupMessage;
+        CloseMessageActions();
+        if (message is null) return;
+        BeginEditMessage(message);
+    }
+
+    private void MessageActionForward_Click(object sender, RoutedEventArgs e)
+    {
+        ShowForwardView();
+    }
+
+    private void MessageActionForwardCancel_Click(object sender, RoutedEventArgs e)
+        => ShowMessageActionsView();
+
+    private async void MessageForwardList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (MessageForwardList.SelectedIndex < 0) return;
+        if (MessageForwardList.Tag is not List<ChatSummary> targets) return;
+        int idx = MessageForwardList.SelectedIndex;
+        if (idx < 0 || idx >= targets.Count) return;
+        ChatMessage? message = _popupMessage;
+        ChatSummary target = targets[idx];
+        CloseMessageActions();
+        if (message is null) return;
+
+        try
+        {
+            await _api.ForwardMessageAsync(target.Id, message.ChatId, message.Id);
+            SetChatStatus($"Forwarded to {target.Title}", false);
+            if (target.Id == _selectedChatId)
+            {
+                _messageSignature = string.Empty;
+                await LoadMessagesAsync();
+            }
+            await RefreshChatsAsync(selectFirst: false);
+        }
+        catch (ApiException ex)
+        {
+            SetChatStatus(ex.Message, true);
+        }
+    }
+
     private async void MessageActionPinForMe_Click(object sender, RoutedEventArgs e)
         => await SetPinAsync("me", pinned: true);
 
@@ -1677,9 +2046,15 @@ public partial class MainWindow : Window
         ChatMessage? message = _popupMessage;
         CloseMessageActions();
         if (message is null || message.Id.StartsWith("local:", StringComparison.Ordinal)) return;
+        if (string.IsNullOrWhiteSpace(message.ChatId))
+        {
+            SetChatStatus("Cannot pin: message has no chat id", true);
+            return;
+        }
 
         try
         {
+            PinDebugLog($"{(pinned ? "pin" : "unpin")} scope={scope} chat={message.ChatId} msg={message.Id}");
             if (pinned)
             {
                 await _api.PinMessageAsync(message.ChatId, message.Id, scope);
@@ -1688,14 +2063,34 @@ public partial class MainWindow : Window
             {
                 await _api.UnpinMessageAsync(message.ChatId, message.Id, scope);
             }
+            PinDebugLog("ok");
             _messageSignature = string.Empty;
             await LoadMessagesAsync();
             SetChatStatus(pinned ? "Message pinned" : "Pin removed", false);
         }
         catch (ApiException ex)
         {
+            PinDebugLog($"api error: {ex.Code} {ex.Message}");
             SetChatStatus(ex.Message, true);
         }
+        catch (Exception ex)
+        {
+            PinDebugLog($"error: {ex}");
+            SetChatStatus("Pin failed: " + ex.Message, true);
+        }
+    }
+
+    private static void PinDebugLog(string message)
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GoPing");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(System.IO.Path.Combine(dir, "pin-debug.log"),
+                $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+        }
+        catch { }
     }
 
     private async void MessageActionDeleteForMe_Click(object sender, RoutedEventArgs e)
@@ -1729,7 +2124,8 @@ public partial class MainWindow : Window
     private void HandlePopupEscape()
     {
         if (MessageActionsDeletePanel.Visibility == Visibility.Visible
-            || MessageActionsPinPanel.Visibility == Visibility.Visible)
+            || MessageActionsPinPanel.Visibility == Visibility.Visible
+            || MessageActionsForwardPanel.Visibility == Visibility.Visible)
         {
             ShowMessageActionsView();
         }
@@ -1947,6 +2343,378 @@ public partial class MainWindow : Window
         EmojiPickerPopup.IsOpen = false;
     }
 
+    private static void VoiceDebug(string message)
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GoPing");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(System.IO.Path.Combine(dir, "voice-debug.log"),
+                $"{DateTimeOffset.Now:o} {message}{Environment.NewLine}");
+            AppLog.Debug("voice: " + message);
+        }
+        catch { }
+    }
+
+    private static string ShortError(Exception ex)
+    {
+        string text = ex.Message.Replace("\r", " ").Replace("\n", " ");
+        VoiceDebug("EXCEPTION: " + ex);
+        return text.Length > 180 ? text[..180] + "…" : text;
+    }
+
+    private async Task WarmUpVoiceRecorderAsync()
+    {
+        try
+        {
+            await EnsureVoiceRecorderReadyAsync();
+            VoiceDebug("warmup ok");
+        }
+        catch (Exception ex)
+        {
+            VoiceDebug("warmup failed: " + ex);
+        }
+    }
+
+    private async Task EnsureVoiceRecorderReadyAsync()
+    {
+        if (_voiceRecorderReady || _voiceRecorderInitializing) return;
+        if (VoiceRecorderWebView is null) throw new InvalidOperationException("Voice recorder is unavailable.");
+        _voiceRecorderInitializing = true;
+        try
+        {
+            await VoiceRecorderWebView.EnsureCoreWebView2Async();
+            var core = VoiceRecorderWebView.CoreWebView2;
+            if (core is null) throw new InvalidOperationException("Voice recorder is unavailable.");
+            core.PermissionRequested -= VoiceRecorder_PermissionRequested;
+            core.PermissionRequested += VoiceRecorder_PermissionRequested;
+            core.WebMessageReceived -= VoiceRecorderWebView_WebMessageReceived;
+            core.WebMessageReceived += VoiceRecorderWebView_WebMessageReceived;
+            string assetsPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets");
+            string recorderPath = System.IO.Path.Combine(assetsPath, "voice", "recorder.html");
+            if (!System.IO.File.Exists(recorderPath))
+                throw new FileNotFoundException("recorder.html not found", recorderPath);
+            // file:// не считается безопасным контекстом для getUserMedia в WebView2 —
+            // раздаём ассеты через https с виртуального хоста
+            core.SetVirtualHostNameToFolderMapping(
+                "goping.local", assetsPath,
+                Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);
+            core.Navigate("https://goping.local/voice/recorder.html");
+            VoiceDebug("navigated to https://goping.local/voice/recorder.html");
+            // give it a moment to load
+            for (int i = 0; i < 40; i++)
+            {
+                await Task.Delay(50);
+                try
+                {
+                    var r = await core.ExecuteScriptAsync("!!(window.voiceRecorder && window.voiceRecorder.start)");
+                    if (string.Equals(r, "true", StringComparison.OrdinalIgnoreCase)) { _voiceRecorderReady = true; break; }
+                }
+                catch { }
+            }
+            if (!_voiceRecorderReady) throw new InvalidOperationException("Voice recorder failed to initialize.");
+            VoiceDebug("recorder JS ready");
+        }
+        finally
+        {
+            _voiceRecorderInitializing = false;
+        }
+    }
+
+    private void VoiceRecorder_PermissionRequested(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2PermissionRequestedEventArgs e)
+    {
+        if (e.PermissionKind == Microsoft.Web.WebView2.Core.CoreWebView2PermissionKind.Microphone)
+        {
+            e.State = Microsoft.Web.WebView2.Core.CoreWebView2PermissionState.Allow;
+            e.Handled = true;
+        }
+    }
+
+    private void VoiceRecorderWebView_WebMessageReceived(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        JsonDocument? inner = null;
+        try
+        {
+            string json = e.WebMessageAsJson;
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            // старые версии JS слали строку JSON — WebView2 оборачивал её в кавычки
+            if (root.ValueKind == JsonValueKind.String)
+            {
+                string? text = root.GetString();
+                if (string.IsNullOrWhiteSpace(text)) return;
+                inner = JsonDocument.Parse(text);
+                root = inner.RootElement;
+            }
+            if (root.ValueKind != JsonValueKind.Object) return;
+            string? type = root.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
+            if (type is not null && !string.Equals(type, "level", StringComparison.OrdinalIgnoreCase))
+                VoiceDebug("JS: " + json[..Math.Min(json.Length, 400)]);
+            if (string.Equals(type, "level", StringComparison.OrdinalIgnoreCase))
+            {
+                if (root.TryGetProperty("bands", out var bandsEl) && bandsEl.ValueKind == JsonValueKind.Array)
+                    UpdateVoiceWave(bandsEl);
+                return;
+            }
+            var tcs = _voiceRecordTcs;
+            if (string.Equals(type, "recorded", StringComparison.OrdinalIgnoreCase))
+            {
+                string b64 = root.TryGetProperty("base64", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() ?? "" : "";
+                string mime = root.TryGetProperty("mime", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() ?? "audio/webm" : "audio/webm";
+                int dur = root.TryGetProperty("durationSec", out var d) && d.TryGetInt32(out int dv) ? dv : 0;
+                _lastVoiceRecordMs = root.TryGetProperty("durationMs", out var ms) && ms.TryGetInt32(out int msv) ? msv : dur * 1000;
+                byte[] bytes = string.IsNullOrWhiteSpace(b64) ? Array.Empty<byte>() : Convert.FromBase64String(b64);
+                _voiceRecordTcs = null;
+                tcs?.TrySetResult((bytes.Length > 0, bytes, mime, dur, bytes.Length > 0 ? null : "Empty recording."));
+            }
+            else if (string.Equals(type, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                string err = root.TryGetProperty("error", out var er) && er.ValueKind == JsonValueKind.String ? er.GetString() ?? "Recording failed." : "Recording failed.";
+                _voiceRecordTcs = null;
+                tcs?.TrySetResult((false, Array.Empty<byte>(), "audio/webm", 0, err));
+            }
+            else if (string.Equals(type, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                _voiceRecordTcs = null;
+                tcs?.TrySetResult((false, Array.Empty<byte>(), "audio/webm", 0, null));
+            }
+        }
+        catch (Exception ex)
+        {
+            VoiceDebug("message parse failed: " + ex);
+            var tcs = _voiceRecordTcs;
+            _voiceRecordTcs = null;
+            tcs?.TrySetResult((false, Array.Empty<byte>(), "audio/webm", 0, "Could not read recorder response."));
+        }
+        finally
+        {
+            inner?.Dispose();
+        }
+    }
+
+    private void SetVoiceRecordingUi(bool recording)
+    {
+        _voiceRecording = recording;
+        if (MessageBox is not null) MessageBox.Visibility = recording ? Visibility.Collapsed : Visibility.Visible;
+        if (VoiceRecordingPanel is not null) VoiceRecordingPanel.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
+        if (VoiceRecordButton is not null) VoiceRecordButton.Visibility = recording ? Visibility.Collapsed : Visibility.Visible;
+        if (VoiceStopButton is not null) VoiceStopButton.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
+        if (VoiceCancelButton is not null) VoiceCancelButton.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
+        if (SendButton is not null) SendButton.IsEnabled = !recording;
+        if (recording)
+        {
+            EnsureVoiceBars();
+            _voiceRecordStartedAt = DateTime.UtcNow;
+            if (VoiceRecordingText is not null) VoiceRecordingText.Text = "0:00";
+            _voiceRecordTimer.Start();
+        }
+        else
+        {
+            _voiceRecordTimer.Stop();
+            if (VoiceRecordingDot is not null) VoiceRecordingDot.Opacity = 1.0;
+            foreach (var bar in _voiceBars) bar.Height = 4;
+        }
+    }
+
+    private void EnsureVoiceBars()
+    {
+        if (_voiceBars.Count > 0 || VoiceWavePanel is null) return;
+        var fill = (System.Windows.Media.Brush)FindResource("AccentBrush");
+        for (int i = 0; i < 28; i++)
+        {
+            var bar = new System.Windows.Shapes.Rectangle
+            {
+                Width = 3,
+                Height = 4,
+                RadiusX = 1.5,
+                RadiusY = 1.5,
+                Margin = new Thickness(0, 0, 2, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Fill = fill
+            };
+            _voiceBars.Add(bar);
+            VoiceWavePanel.Children.Add(bar);
+        }
+    }
+
+    private void UpdateVoiceWave(JsonElement bands)
+    {
+        if (!_voiceRecording || _voiceBars.Count == 0) return;
+        int i = 0;
+        foreach (JsonElement band in bands.EnumerateArray())
+        {
+            if (i >= _voiceBars.Count) break;
+            double v = band.ValueKind == JsonValueKind.Number ? Math.Clamp(band.GetDouble(), 0, 1) : 0;
+            _voiceBars[i].Height = 4 + v * 20;
+            i++;
+        }
+    }
+
+    // Удерживание кнопки микрофона: нажал — запись, отпустил — автоматическая отправка.
+    private async void VoiceRecordButton_PreviewDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (_voiceRecording || _selectedChatId is null) return;
+        VoiceDebug("PRESS");
+        _voiceHoldActive = true;
+        // захват мыши, чтобы отпускание вне кнопки тоже останавливало запись
+        VoiceRecordButton.CaptureMouse();
+        try
+        {
+            await EnsureVoiceRecorderReadyAsync();
+            var core = VoiceRecorderWebView.CoreWebView2;
+            if (core is null) { VoiceDebug("no CoreWebView2"); _voiceHoldActive = false; return; }
+            _voiceRecordTcs = new TaskCompletionSource<(bool, byte[], string, int, string?)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            SetVoiceRecordingUi(true);
+            VoiceDebug("calling start()");
+            await core.ExecuteScriptAsync("window.voiceRecorder && window.voiceRecorder.start()");
+            VoiceDebug("start() returned");
+            // палец отпустили, пока рекордер инициализировался — сразу останавливаем и отправляем
+            if (!_voiceHoldActive) _ = StopAndSendVoiceAsync();
+        }
+        catch (Exception ex)
+        {
+            _voiceHoldActive = false;
+            if (VoiceRecordButton.IsMouseCaptured) VoiceRecordButton.ReleaseMouseCapture();
+            SetVoiceRecordingUi(false);
+            SetChatStatus(ShortError(ex), true);
+        }
+    }
+
+    private async void VoiceRecordButton_PreviewUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        VoiceDebug("RELEASE");
+        _voiceHoldActive = false;
+        if (VoiceRecordButton.IsMouseCaptured) VoiceRecordButton.ReleaseMouseCapture();
+        if (_voiceRecording) await StopAndSendVoiceAsync();
+    }
+
+    private async void VoiceStopButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_voiceRecording) return;
+        _voiceHoldActive = false;
+        await StopAndSendVoiceAsync();
+    }
+
+    private async void VoiceCancelButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_voiceRecording) return;
+        _voiceHoldActive = false;
+        try
+        {
+            var core = VoiceRecorderWebView?.CoreWebView2;
+            if (core is not null)
+                await core.ExecuteScriptAsync("window.voiceRecorder && window.voiceRecorder.cancel()");
+            var tcs = _voiceRecordTcs;
+            if (tcs is not null) await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch { }
+        finally
+        {
+            _voiceRecordTcs = null;
+            SetVoiceRecordingUi(false);
+        }
+    }
+
+    private async Task StopAndSendVoiceAsync()
+    {
+        VoiceDebug("STOP");
+        try
+        {
+            var core = VoiceRecorderWebView?.CoreWebView2;
+            if (core is null) { VoiceDebug("no CoreWebView2 on stop"); SetVoiceRecordingUi(false); return; }
+            await core.ExecuteScriptAsync("window.voiceRecorder && window.voiceRecorder.stop()");
+            VoiceDebug("stop() called");
+            var tcs = _voiceRecordTcs;
+            if (tcs is null) { VoiceDebug("no pending tcs"); SetVoiceRecordingUi(false); return; }
+            var result = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            SetVoiceRecordingUi(false);
+            VoiceDebug($"RESULT ok={result.Ok} bytes={result.Bytes.Length} mime={result.Mime} ms={_lastVoiceRecordMs} err={result.Error}");
+            if (!result.Ok)
+            {
+                if (!string.IsNullOrWhiteSpace(result.Error)) SetChatStatus(result.Error!, true);
+                return;
+            }
+            if (result.Bytes.Length < 1000)
+            {
+                SetChatStatus("Too short — hold the mic button to record.", false);
+                return;
+            }
+            await SendVoiceMessageAsync(result.Bytes, result.Mime, result.DurationSec);
+            VoiceDebug("UPLOAD OK");
+        }
+        catch (Exception ex)
+        {
+            SetVoiceRecordingUi(false);
+            VoiceDebug("STOP FAILED: " + ex);
+            SetChatStatus(ShortError(ex), true);
+        }
+    }
+
+    private async Task SendVoiceMessageAsync(byte[] bytes, string mime, int durationSec)
+    {
+        if (_selectedChatId is null || bytes.Length == 0) return;
+        string ext = mime.Contains("ogg", StringComparison.OrdinalIgnoreCase) ? ".ogg"
+            : mime.Contains("mp4", StringComparison.OrdinalIgnoreCase) || mime.Contains("m4a", StringComparison.OrdinalIgnoreCase) ? ".m4a"
+            : mime.Contains("wav", StringComparison.OrdinalIgnoreCase) ? ".wav"
+            : mime.Contains("mpeg", StringComparison.OrdinalIgnoreCase) || mime.Contains("mp3", StringComparison.OrdinalIgnoreCase) ? ".mp3"
+            : ".webm";
+        string fileName = "voice" + ext;
+
+        ChatMessage? previousReply = _replyingTo;
+        string? replyToId = previousReply?.Id;
+        ReplyPreview? replyPreview = previousReply is null
+            ? null
+            : new ReplyPreview(previousReply.Id, Shorten(previousReply.Text, 120), previousReply.Sender.Nickname);
+
+        var pending = new ChatMessage(
+            "local:" + (++_pendingSequence),
+            _selectedChatId,
+            new ChatMessageSender(_user.Id, _user.Username, _user.Nickname, _user.AvatarUrl),
+            $"{{\"path\":\"\",\"durationSec\":{durationSec}}}",
+            string.Empty,
+            DateTimeOffset.UtcNow,
+            replyPreview,
+            "sending",
+            "voice");
+
+        _pendingMessages.Add(pending);
+        RenderMessages();
+        ClearReply();
+
+        _sendingMessage = true;
+        SetChatStatus("Sending voice message…", false);
+        try
+        {
+            await _api.SendVoiceAsync(_selectedChatId, bytes, fileName, mime, durationSec, replyToId);
+            _pendingMessages.Remove(pending);
+            PrunePendingDuplicates(_messages);
+            _messageSignature = string.Empty;
+            await LoadMessagesAsync();
+            await RefreshChatsAsync(selectFirst: false);
+            UpdatePresenceStatus();
+        }
+        catch (ApiException ex)
+        {
+            _pendingMessages.Remove(pending);
+            RenderMessages();
+            VoiceDebug($"UPLOAD FAILED code={ex.Code} status={ex.StatusCode} message={ex.Message}");
+            SetChatStatus($"Voice upload failed: {ex.Message}", true);
+        }
+        catch (Exception ex)
+        {
+            _pendingMessages.Remove(pending);
+            RenderMessages();
+            SetChatStatus(ShortError(ex), true);
+        }
+        finally
+        {
+            _sendingMessage = false;
+        }
+    }
+
     private async void SendButton_Click(object sender, RoutedEventArgs e)
         => await SendCurrentMessageAsync();
 
@@ -1966,12 +2734,43 @@ public partial class MainWindow : Window
         string text = MessageBox.Text.Trim();
         if (text.Length == 0) return;
 
+        if (_editingMessage is not null)
+        {
+            ChatMessage editing = _editingMessage;
+            if (editing.ChatId != _selectedChatId)
+            {
+                ClearEdit();
+                return;
+            }
+
+            _sendingMessage = true;
+            SetChatStatus("Saving…", false);
+            try
+            {
+                ChatMessage updated = await _api.EditMessageAsync(editing.ChatId, editing.Id, text);
+                UpsertMessage(updated);
+                ClearEdit();
+                MessageBox.Text = string.Empty;
+                SetChatStatus(string.Empty, false);
+                await RefreshChatsAsync(selectFirst: false);
+            }
+            catch (ApiException ex)
+            {
+                SetChatStatus(ex.Message, true);
+            }
+            finally
+            {
+                _sendingMessage = false;
+            }
+            return;
+        }
+
         ChatMessage? previousReply = _replyingTo;
         string? replyToId = previousReply?.Id;
         ReplyPreview? replyPreview = previousReply is null
             ? null
             : new ReplyPreview(
-                previousReply.Id, Shorten(previousReply.Text, 120), previousReply.Sender.Nickname);
+                previousReply.Id, Shorten(MessageDisplayText(previousReply), 120), previousReply.Sender.Nickname);
 
         var pending = new ChatMessage(
             "local:" + (++_pendingSequence),
@@ -2027,11 +2826,40 @@ public partial class MainWindow : Window
         Keyboard.Focus(MessageBox);
     }
 
-    private void CancelReplyButton_Click(object sender, RoutedEventArgs e) => ClearReply();
+    private void CancelReplyButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_editingMessage is not null) ClearEdit();
+        else ClearReply();
+    }
 
     private void ClearReply()
     {
         _replyingTo = null;
+        if (_editingMessage is null)
+        {
+            ReplyBanner.Visibility = Visibility.Collapsed;
+            ReplySenderText.Text = string.Empty;
+            ReplyPreviewText.Text = string.Empty;
+        }
+    }
+
+    private void BeginEditMessage(ChatMessage message)
+    {
+        if (message.Id.StartsWith("local:", StringComparison.Ordinal)) return;
+        if (message.IsCall || message.IsVoice) return;
+        _editingMessage = message;
+        _replyingTo = null;
+        ReplySenderText.Text = "Editing message";
+        ReplyPreviewText.Text = Shorten(MessageDisplayText(message), 140);
+        ReplyBanner.Visibility = Visibility.Visible;
+        MessageBox.Text = message.Text;
+        MessageBox.CaretIndex = MessageBox.Text.Length;
+        Keyboard.Focus(MessageBox);
+    }
+
+    private void ClearEdit()
+    {
+        _editingMessage = null;
         ReplyBanner.Visibility = Visibility.Collapsed;
         ReplySenderText.Text = string.Empty;
         ReplyPreviewText.Text = string.Empty;
@@ -2056,6 +2884,7 @@ public partial class MainWindow : Window
         {
             await _api.DeleteMessageAsync(message.ChatId, message.Id, forEveryone);
             if (ReferenceEquals(_replyingTo, message)) ClearReply();
+            if (_editingMessage is not null && string.Equals(_editingMessage.Id, message.Id, StringComparison.Ordinal)) ClearEdit();
             _messageSignature = string.Empty;
             _readSignature = string.Empty;
             await LoadMessagesAsync();
@@ -2069,6 +2898,7 @@ public partial class MainWindow : Window
 
     private void OnRealtimeStatus(RealtimeStatus status, int attempt)
     {
+        AppLog.Info($"Realtime: {status} (attempt {attempt})");
         Dispatcher.BeginInvoke(new Action(() =>
         {
             switch (status)
@@ -2144,6 +2974,7 @@ public partial class MainWindow : Window
 
     private void OnCallIncoming(CallInfo call)
     {
+        AppLog.Info($"Incoming call from {call.PeerName} ({call.CallId})");
         Dispatcher.BeginInvoke(new Action(() =>
         {
             _callHideTimer.Stop();
@@ -2166,6 +2997,7 @@ public partial class MainWindow : Window
 
     private void OnCallStateChanged(CallStatus status, string text)
     {
+        AppLog.Info($"Call: {status} — {text}");
         Dispatcher.BeginInvoke(new Action(() =>
         {
             if (status == CallStatus.Ended)
@@ -2195,6 +3027,9 @@ public partial class MainWindow : Window
                     CallPeerStateText.Text = "";
                     CallPeerStateText.Visibility = Visibility.Collapsed;
                 }
+                if (CallPeerVolumePopup is not null) CallPeerVolumePopup.IsOpen = false;
+                if (CallPeerVolumeSlider is not null) CallPeerVolumeSlider.Value = 100;
+                if (CallPeerVolumeValueText is not null) CallPeerVolumeValueText.Text = "100%";
                 CallStatusText.Text = text;
                 ShowCallActions(active: false);
                 CallAcceptButton.IsEnabled = false;
@@ -2482,20 +3317,77 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void CallShareButton_Click(object sender, RoutedEventArgs e)
+    private void CallShareButton_Click(object sender, RoutedEventArgs e)
     {
+        if (CallShareSettingsPopup is null) return;
+        SyncCallShareSettingsUi();
+        CallShareSettingsPopup.IsOpen = !CallShareSettingsPopup.IsOpen;
+    }
+
+    private void SyncCallShareSettingsUi()
+    {
+        if (CallShareFpsSlider is not null)
+        {
+            int fps = Math.Clamp(_appSettings.ScreenShareFps, 30, 60);
+            CallShareFpsSlider.Value = fps;
+            if (CallShareFpsValueText is not null) CallShareFpsValueText.Text = $"{fps} FPS";
+        }
+        if (CallShareQualityCombo is not null)
+        {
+            string q = NormalizeScreenShareQuality(_appSettings.ScreenShareQuality);
+            foreach (var item in CallShareQualityCombo.Items.OfType<System.Windows.Controls.ComboBoxItem>())
+            {
+                if (string.Equals(item.Tag?.ToString(), q, StringComparison.OrdinalIgnoreCase))
+                { CallShareQualityCombo.SelectedItem = item; break; }
+            }
+            if (CallShareQualityCombo.SelectedItem is null && CallShareQualityCombo.Items.Count > 0)
+                CallShareQualityCombo.SelectedIndex = 2; // HD
+        }
+        if (CallSharePopupStopButton is not null)
+            CallSharePopupStopButton.Visibility = _calls.IsScreenSharing ? Visibility.Visible : Visibility.Collapsed;
+        if (CallSharePopupStartButton is not null)
+            CallSharePopupStartButton.Content = _calls.IsScreenSharing ? "New screen" : "Choose screen";
+    }
+
+    private void CallShareFpsSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_calls is null || CallShareFpsSlider is null) return;
+        int fps = Math.Clamp((int)Math.Round(CallShareFpsSlider.Value), 30, 60);
+        if (CallShareFpsValueText is not null) CallShareFpsValueText.Text = $"{fps} FPS";
+        if (_suppressSettingsSave) return;
+        _appSettings.ScreenShareFps = fps;
+        _calls.ScreenShareFps = fps;
+        if (ScreenShareFpsSlider is not null && Math.Abs(ScreenShareFpsSlider.Value - fps) > 0.01)
+            ScreenShareFpsSlider.Value = fps;
+        if (ScreenShareFpsValueText is not null) ScreenShareFpsValueText.Text = $"{fps} FPS";
+        AppSettingsStore.Save(_appSettings);
+    }
+
+    private void CallShareQualityCombo_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_calls is null || CallShareQualityCombo?.SelectedItem is not System.Windows.Controls.ComboBoxItem item) return;
+        string q = NormalizeScreenShareQuality(item.Tag?.ToString());
+        if (_suppressSettingsSave) { _calls.ScreenShareQuality = q; return; }
+        _appSettings.ScreenShareQuality = q;
+        _calls.ScreenShareQuality = q;
+        AppSettingsStore.Save(_appSettings);
+    }
+
+    private async void CallSharePopupStartButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CallShareSettingsPopup is not null) CallShareSettingsPopup.IsOpen = false;
         try
         {
             if (_calls.IsScreenSharing)
             {
                 await _calls.StopScreenShareAsync();
                 UpdateScreenShareUi();
-                return;
             }
 
+            ScreenShareSource? source = await ShowScreenPickerAsync();
+            if (source is null) return;
             if (CallWebView is not null) CallWebView.Visibility = Visibility.Visible;
             if (CallPeerCenter is not null) CallPeerCenter.Visibility = Visibility.Collapsed;
-            ScreenShareSource source = new(ScreenShareKind.Monitor, "Screen", IntPtr.Zero, 0, 0, 0, 0);
             await _calls.StartScreenShareAsync(source);
             UpdateScreenShareUi();
         }
@@ -2503,6 +3395,54 @@ public partial class MainWindow : Window
         {
             CallStatusText.Text = ex.Message;
             UpdateScreenShareUi();
+        }
+    }
+
+    private async void CallSharePopupStopButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CallShareSettingsPopup is not null) CallShareSettingsPopup.IsOpen = false;
+        try
+        {
+            await _calls.StopScreenShareAsync();
+            UpdateScreenShareUi();
+        }
+        catch (Exception ex)
+        {
+            CallStatusText.Text = ex.Message;
+            UpdateScreenShareUi();
+        }
+    }
+
+    private static string NormalizeScreenShareQuality(string? quality)
+    {
+        return (quality ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "standard" or "sd" or "960p" => "Standard",
+            "high" or "1280p" => "High",
+            "fullhd" or "1080p" or "fhd" => "FullHD",
+            "native" or "source" or "original" => "FullHD",
+            _ => "HD"
+        };
+    }
+
+    private void CallPeerCenter_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (CallPeerVolumePopup is null) return;
+        CallPeerVolumePopup.IsOpen = !CallPeerVolumePopup.IsOpen;
+    }
+
+    private async void CallPeerVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_calls is null || CallPeerVolumeSlider is null) return;
+        double percent = Math.Clamp(CallPeerVolumeSlider.Value, 0, 400);
+        if (CallPeerVolumeValueText is not null) CallPeerVolumeValueText.Text = $"{(int)Math.Round(percent)}%";
+        try
+        {
+            await _calls.SetRemoteVolumeAsync(percent / 100.0);
+        }
+        catch
+        {
+            // best-effort; volume is non-critical
         }
     }
 
@@ -2588,6 +3528,24 @@ public partial class MainWindow : Window
                     }
                     break;
 
+                case "message.edited":
+                    if (root.TryGetProperty("message", out JsonElement editedNode))
+                    {
+                        ChatMessage? edited = JsonSerializer.Deserialize<ChatMessage>(
+                            editedNode.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                        if (edited is not null && chatId == _selectedChatId)
+                        {
+                            UpsertMessage(edited);
+                        }
+                    }
+                    await RefreshChatsAsync(selectFirst: false);
+                    if (chatId == _selectedChatId && !_messageRows.ContainsKey(ReadString(root, "messageId") ?? string.Empty))
+                    {
+                        _messageSignature = string.Empty;
+                        await LoadMessagesAsync();
+                    }
+                    break;
+
                 case "message.deleted":
                 case "message.pinned":
                 case "messages.read":
@@ -2668,6 +3626,7 @@ public partial class MainWindow : Window
             : null;
     private void SetChatStatus(string message, bool isError)
     {
+        if (isError && !string.IsNullOrWhiteSpace(message)) AppLog.Error(message);
         ChatStatusText.Text = message;
         ChatStatusText.SetResourceReference(
             TextBlock.ForegroundProperty, isError ? "DangerBrush" : "MutedBrush");
@@ -3147,6 +4106,33 @@ public partial class MainWindow : Window
                 MessageNotificationsCheckBox.IsChecked = _appSettings.ShowMessageNotifications;
             if (RaiseWindowOnCallCheckBox is not null)
                 RaiseWindowOnCallCheckBox.IsChecked = _appSettings.RaiseWindowOnIncomingCall;
+            if (ScreenShareFpsSlider is not null)
+            {
+                int fps = Math.Clamp(_appSettings.ScreenShareFps, 30, 60);
+                ScreenShareFpsSlider.Value = fps;
+                if (ScreenShareFpsValueText is not null) ScreenShareFpsValueText.Text = $"{fps} FPS";
+            }
+            _calls.ScreenShareFps = Math.Clamp(_appSettings.ScreenShareFps, 30, 60);
+            if (ScreenCaptureModeCombo is not null)
+            {
+                string mode = NormalizeScreenCaptureMode(_appSettings.ScreenCaptureMode);
+                foreach (var item in ScreenCaptureModeCombo.Items.OfType<System.Windows.Controls.ComboBoxItem>())
+                {
+                    if (string.Equals(item.Tag?.ToString(), mode, StringComparison.OrdinalIgnoreCase))
+                    { ScreenCaptureModeCombo.SelectedItem = item; break; }
+                }
+                if (ScreenCaptureModeCombo.SelectedItem is null && ScreenCaptureModeCombo.Items.Count > 0)
+                    ScreenCaptureModeCombo.SelectedIndex = 0;
+            }
+            _calls.ScreenCaptureMode = NormalizeScreenCaptureMode(_appSettings.ScreenCaptureMode);
+            _calls.ScreenShareQuality = NormalizeScreenShareQuality(_appSettings.ScreenShareQuality);
+            SyncCallShareSettingsUi();
+            if (BetaUpdatesCheckBox is not null)
+                BetaUpdatesCheckBox.IsChecked = _appSettings.UseBetaUpdates;
+            if (UpdateVersionText is not null)
+                UpdateVersionText.Text = $"Current version: {UpdateService.CurrentVersion}";
+            if (_pendingUpdate is not null)
+                ShowUpdateInfo(_pendingUpdate);
         }
         finally
         {
@@ -3160,6 +4146,236 @@ public partial class MainWindow : Window
         _appSettings.ShowMessageNotifications = MessageNotificationsCheckBox.IsChecked == true;
         _appSettings.RaiseWindowOnIncomingCall = RaiseWindowOnCallCheckBox.IsChecked == true;
         AppSettingsStore.Save(_appSettings);
+    }
+
+    // ===== Обновления через GitHub Releases =====
+
+    private void UpdateAvailableButton_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsButton_Click(sender, e);
+    }
+
+    private void BetaUpdatesCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSettingsSave) return;
+        _appSettings.UseBetaUpdates = BetaUpdatesCheckBox.IsChecked == true;
+        AppSettingsStore.Save(_appSettings);
+        AppLog.Info("Beta updates " + (_appSettings.UseBetaUpdates ? "enabled" : "disabled") + ".");
+        _ = RunUpdateCheckAsync();
+    }
+
+    private async Task CheckForUpdatesSilentAsync()
+    {
+        try
+        {
+            UpdateInfo? info = await UpdateService.CheckAsync(
+                _appSettings.UpdateGitHubRepo, _appSettings.UseBetaUpdates);
+            if (info is null) return;
+            _pendingUpdate = info;
+            ShowUpdateInfo(info);
+            AppLog.Info($"Update {info.Version} available{(info.IsPrerelease ? " (beta)" : "")} — downloading.");
+            await AutoDownloadAsync(info, showProgress: false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Debug("Startup update check skipped: " + ex.Message);
+        }
+    }
+
+    private void ShowUpdateInfo(UpdateInfo info)
+    {
+        UpdateAvailableButton.Visibility = Visibility.Visible;
+        UpdateAvailableButton.ToolTip = $"Update {info.Version} available — open Settings";
+        UpdateInstallButton.Visibility = Visibility.Visible;
+
+        string notes = string.IsNullOrWhiteSpace(info.Notes) ? "" : info.Notes.Trim();
+        if (notes.Length > 4000) notes = notes[..4000] + "\n…";
+        if (notes.Length > 0)
+        {
+            UpdateNotesHeader.Visibility = Visibility.Visible;
+            UpdateNotesBox.Visibility = Visibility.Visible;
+            UpdateNotesBox.Text = $"{info.ReleaseName}{(info.IsPrerelease ? " (BETA)" : "")}\n\n{notes}";
+        }
+        else
+        {
+            UpdateNotesHeader.Visibility = Visibility.Collapsed;
+            UpdateNotesBox.Visibility = Visibility.Collapsed;
+        }
+
+        string beta = info.IsPrerelease ? " (beta)" : "";
+        string size = info.AssetSize > 0 ? $", {info.AssetSize / (1024.0 * 1024.0):F1} MB" : "";
+        if (DownloadedFileReady())
+        {
+            UpdateInstallButton.Content = "Install update";
+            UpdateStatusText.Text = $"Version {info.Version}{beta}{size} downloaded. Click Install update to apply and restart.";
+        }
+        else
+        {
+            UpdateInstallButton.Content = "Download & install";
+            UpdateStatusText.Text = $"Version {info.Version}{beta}{size} is available. Downloading automatically…";
+        }
+    }
+
+    private static bool DownloadedFileReady()
+        => UpdateService.DownloadedPath is { } path && File.Exists(path);
+
+    private async Task AutoDownloadAsync(UpdateInfo info, bool showProgress)
+    {
+        if (DownloadedFileReady()) return;
+        try
+        {
+            if (showProgress)
+            {
+                UpdateProgressBar.Visibility = Visibility.Visible;
+                UpdateProgressBar.Value = 0;
+            }
+            var progress = showProgress ? new Progress<double>(p => UpdateProgressBar.Value = p) : null;
+            string file = await UpdateService.DownloadAsync(info, progress);
+            if (!await UpdateService.VerifyAsync(file, info))
+            {
+                UpdateStatusText.Text = "Checksum mismatch — automatic download aborted.";
+                AppLog.Error("Update checksum mismatch for " + info.AssetName);
+                return;
+            }
+            UpdateService.RememberDownload(file);
+            UpdateInstallButton.Content = "Install update";
+            UpdateStatusText.Text = $"Version {info.Version} downloaded. Click Install update to apply and restart.";
+            AppLog.Info("Update downloaded: " + file);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Auto-download failed: " + ex.Message);
+            UpdateStatusText.Text = "Auto-download failed — click Download & install to retry.";
+        }
+        finally
+        {
+            if (showProgress) UpdateProgressBar.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private async Task RunUpdateCheckAsync()
+    {
+        if (_updateBusy) return;
+        _updateBusy = true;
+        UpdateCheckButton.IsEnabled = false;
+        UpdateStatusText.Text = "Checking for updates…";
+        try
+        {
+            UpdateInfo? info = await UpdateService.CheckAsync(
+                UpdateService.NormalizeRepo(_appSettings.UpdateGitHubRepo), _appSettings.UseBetaUpdates);
+            if (info is null)
+            {
+                _pendingUpdate = null;
+                UpdateService.ClearDownloaded();
+                UpdateAvailableButton.Visibility = Visibility.Collapsed;
+                UpdateInstallButton.Visibility = Visibility.Collapsed;
+                UpdateNotesHeader.Visibility = Visibility.Collapsed;
+                UpdateNotesBox.Visibility = Visibility.Collapsed;
+                UpdateStatusText.Text = $"You're up to date (v{UpdateService.CurrentVersion}).";
+                AppLog.Info("No update available.");
+                return;
+            }
+            if (_pendingUpdate?.Version != info.Version) UpdateService.ClearDownloaded();
+            _pendingUpdate = info;
+            ShowUpdateInfo(info);
+            AppLog.Info($"Update {info.Version} found{(info.IsPrerelease ? " (beta)" : "")}.");
+            await AutoDownloadAsync(info, showProgress: true);
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = $"Update check failed: {ex.Message}";
+            AppLog.Error("Update check failed: " + ex.Message);
+        }
+        finally
+        {
+            _updateBusy = false;
+            UpdateCheckButton.IsEnabled = true;
+        }
+    }
+
+    private async void UpdateCheckButton_Click(object sender, RoutedEventArgs e)
+        => await RunUpdateCheckAsync();
+
+    private async void UpdateInstallButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updateBusy) return;
+        _updateBusy = true;
+        UpdateCheckButton.IsEnabled = false;
+        UpdateInstallButton.IsEnabled = false;
+        UpdateProgressBar.Visibility = Visibility.Visible;
+        UpdateProgressBar.Value = 0;
+        try
+        {
+            UpdateInfo? info = _pendingUpdate ?? await UpdateService.CheckAsync(
+                _appSettings.UpdateGitHubRepo, _appSettings.UseBetaUpdates);
+            if (info is null)
+            {
+                UpdateStatusText.Text = $"You're up to date (v{UpdateService.CurrentVersion}).";
+                return;
+            }
+
+            string file = DownloadedFileReady()
+                ? UpdateService.DownloadedPath!
+                : await UpdateService.DownloadAsync(info, new Progress<double>(p => UpdateProgressBar.Value = p));
+
+            UpdateStatusText.Text = "Verifying download…";
+            if (!await UpdateService.VerifyAsync(file, info))
+            {
+                UpdateStatusText.Text = "Checksum mismatch — update aborted. Try again later.";
+                return;
+            }
+
+            UpdateStatusText.Text = "Preparing update…";
+            string staging = UpdateService.ExtractToStaging(file, info);
+
+            UpdateStatusText.Text = "Installing… GoPing will restart in a moment.";
+            AppLog.Info("Installing update " + info.Version + "…");
+            UpdateService.LaunchUpdaterAndRestart(staging);
+            await Task.Delay(600);
+            Application.Current.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            UpdateStatusText.Text = $"Update failed: {ex.Message}";
+            AppLog.Error("Update failed: " + ex.Message);
+        }
+        finally
+        {
+            _updateBusy = false;
+            UpdateCheckButton.IsEnabled = true;
+            UpdateInstallButton.IsEnabled = true;
+            UpdateProgressBar.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void ScreenShareFpsSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_suppressSettingsSave || _calls is null) return;
+        int fps = Math.Clamp((int)Math.Round(ScreenShareFpsSlider.Value), 30, 60);
+        if (ScreenShareFpsValueText is not null) ScreenShareFpsValueText.Text = $"{fps} FPS";
+        _appSettings.ScreenShareFps = fps;
+        _calls.ScreenShareFps = fps;
+        if (CallShareFpsSlider is not null && Math.Abs(CallShareFpsSlider.Value - fps) > 0.01)
+            CallShareFpsSlider.Value = fps;
+        if (CallShareFpsValueText is not null) CallShareFpsValueText.Text = $"{fps} FPS";
+        AppSettingsStore.Save(_appSettings);
+    }
+
+    private void ScreenCaptureModeCombo_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_suppressSettingsSave || _calls is null) return;
+        if (ScreenCaptureModeCombo?.SelectedItem is not System.Windows.Controls.ComboBoxItem item) return;
+        string mode = NormalizeScreenCaptureMode(item.Tag?.ToString());
+        _appSettings.ScreenCaptureMode = mode;
+        _calls.ScreenCaptureMode = mode;
+        AppSettingsStore.Save(_appSettings);
+    }
+
+    private static string NormalizeScreenCaptureMode(string? mode)
+    {
+        if (string.Equals(mode, "Wgc", StringComparison.OrdinalIgnoreCase)) return "Wgc";
+        if (string.Equals(mode, "Gdi", StringComparison.OrdinalIgnoreCase)) return "Gdi";
+        return "Auto";
     }
 
     private void ShowChatPanel()
@@ -3304,6 +4520,108 @@ public partial class MainWindow : Window
         ProfileStatusText.SetResourceReference(
             TextBlock.ForegroundProperty,
             isError ? "DangerBrush" : "MutedBrush");
+    }
+
+    // ===== Внутренняя консоль =====
+
+    private async Task LogServerStatusAsync()
+    {
+        bool up = await HostControlService.IsServerRunningAsync();
+        if (up) AppLog.Info("Server is reachable at " + HostControlService.ApiUrl + ".");
+        else AppLog.Warn("Server is not reachable at " + HostControlService.ApiUrl +
+                         " — open the Console and press Start server + TURN.");
+    }
+
+    private bool _consoleAttached;
+
+    private void AttachConsole()
+    {
+        if (_consoleAttached) return;
+        _consoleAttached = true;
+        AppLog.Added += OnAppLogAdded;
+        ConsoleOutput.Text = string.Join(Environment.NewLine,
+            AppLog.Snapshot().Select(e => e.Line));
+        ConsoleOutput.ScrollToEnd();
+        // Radmin включается сам, если установлен — подсказка остаётся в консоли.
+        HostControlService.StartRadminIfNeeded();
+    }
+
+    private void OnAppLogAdded(AppLog.Entry entry)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (ConsoleOutput.Text.Length > 0) ConsoleOutput.AppendText(Environment.NewLine);
+            ConsoleOutput.AppendText(entry.Line);
+            ConsoleOutput.ScrollToEnd();
+        }));
+    }
+
+    private void ConsoleToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (ConsolePanel.Visibility == Visibility.Visible)
+        {
+            ConsolePanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        AttachConsole();
+        ConsolePanel.Visibility = Visibility.Visible;
+        FadeIn(ConsolePanel);
+    }
+
+    private void ConsoleCloseButton_Click(object sender, RoutedEventArgs e)
+        => ConsolePanel.Visibility = Visibility.Collapsed;
+
+    private void ConsoleClearButton_Click(object sender, RoutedEventArgs e)
+    {
+        ConsoleOutput.Clear();
+        AppLog.Clear();
+        ConsoleStatusText.Text = "Console cleared. The log file on disk is kept.";
+    }
+
+    private void ConsoleCopyButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText(ConsoleOutput.Text);
+            ConsoleStatusText.Text = "Console log copied to clipboard.";
+        }
+        catch (Exception ex)
+        {
+            ConsoleStatusText.Text = "Copy failed: " + ex.Message;
+            AppLog.Error("Console copy failed: " + ex.Message);
+        }
+    }
+
+    private async void ConsoleStartServerButton_Click(object sender, RoutedEventArgs e)
+    {
+        ConsoleStatusText.Text = "Starting server and TURN…";
+        await HostControlService.StartServerAsync();
+        ConsoleStatusText.Text = await HostControlService.IsServerRunningAsync()
+            ? "Server is up and healthy."
+            : "Server did not start — see console output above.";
+    }
+
+    private async void ConsoleStartTurnButton_Click(object sender, RoutedEventArgs e)
+    {
+        ConsoleStatusText.Text = "Starting coturn (TURN)…";
+        bool ok = await HostControlService.StartTurnAsync();
+        ConsoleStatusText.Text = ok
+            ? "TURN is running on port 3478."
+            : "TURN failed to start — see console output above.";
+    }
+
+    private void ConsoleStartRadminButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (HostControlService.FindRadmin() is null)
+        {
+            ConsoleStatusText.Text = HostControlService.RadminHint;
+            AppLog.Warn("Radmin VPN is not installed. " + HostControlService.RadminHint);
+            return;
+        }
+        HostControlService.StartRadminIfNeeded(true);
+        ConsoleStatusText.Text = HostControlService.IsRadminRunning()
+            ? "Radmin VPN is running. " + HostControlService.RadminHint
+            : HostControlService.RadminHint;
     }
 }
 

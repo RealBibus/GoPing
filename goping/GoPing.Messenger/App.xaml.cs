@@ -10,6 +10,8 @@ public partial class App : Application
 {
     public App()
     {
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            AppLog.Error("Unhandled exception: " + e.ExceptionObject);
         DispatcherUnhandledException += (_, e) =>
         {
             try
@@ -20,7 +22,7 @@ public partial class App : Application
             }
             catch { }
 
-            MessageBox.Show(e.Exception.ToString(), "Unhandled exception");
+            AppLog.Error("Unhandled exception: " + e.Exception);
             e.Handled = true;
         };
     }
@@ -29,6 +31,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        AppLog.Info("GoPing starting (v" + UpdateService.CurrentVersion + ").");
 
         // КРИТИЧНО: разморозить brush-ресурсы ДО загрузки окон.
         // Иначе BeginAnimation бросит InvalidOperationException и тема
@@ -54,7 +57,7 @@ public partial class App : Application
                     auth = await api.RefreshAsync();
                     SessionStore.Save(new StoredSession(null, auth.RefreshToken));
                 }
-                else throw new ApiException("EMPTY_SESSION", "Сохранённая сессия пуста.");
+                else throw new ApiException("EMPTY_SESSION", "Saved session is empty.");
 
                 OpenMain(api, auth.User);
                 return;
@@ -64,11 +67,12 @@ public partial class App : Application
                                               or "INVALID_TOKEN"
                                               or "EMPTY_SESSION")
             {
-                // Сессия действительно недействительна — удаляем её.
+                AppLog.Warn("Saved session rejected (" + ex.Code + "). Sign in again.");
                 SessionStore.Clear();
             }
-            catch
+            catch (Exception ex)
             {
+                AppLog.Warn("Could not restore saved session: " + ex.Message + " — server may be offline.");
                 // Сервер недоступен или временный сбой. Сессию сохраняем,
                 // иначе после её возврата пользователя снова просят войти.
             }
@@ -104,6 +108,7 @@ public partial class App : Application
 
     public void OpenLogin(ApiClient api)
     {
+        AppLog.Info("Opening sign-in window.");
         var login = new LoginWindow(api);
         MainWindow = login;
         ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -112,6 +117,7 @@ public partial class App : Application
 
     public void OpenMain(ApiClient api, UserProfile user)
     {
+        AppLog.Info("Signed in as " + user.Nickname + " (" + user.Username + ").");
         var main = new MainWindow(api, user);
         MainWindow = main;
         ShutdownMode = ShutdownMode.OnMainWindowClose;

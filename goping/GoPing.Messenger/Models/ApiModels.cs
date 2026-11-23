@@ -69,6 +69,8 @@ public sealed record ReplyPreview(
     string Text,
     string SenderNickname);
 
+public sealed record VoicePayload(string Url, int DurationSec);
+
 public sealed record ChatMessage(
     string Id,
     string ChatId,
@@ -79,9 +81,30 @@ public sealed record ChatMessage(
     ReplyPreview? ReplyTo = null,
     string? Status = null,
     string? PinScope = null,
-    string? Kind = null)
+    string? Kind = null,
+    DateTimeOffset? EditedAt = null,
+    string? ForwardedFromSenderNickname = null,
+    string? ForwardedFromText = null)
 {
     public bool IsCall => string.Equals(Kind, "call", StringComparison.OrdinalIgnoreCase);
+    public bool IsVoice => string.Equals(Kind, "voice", StringComparison.OrdinalIgnoreCase);
+    public bool IsForwarded => !string.IsNullOrWhiteSpace(ForwardedFromSenderNickname) || !string.IsNullOrWhiteSpace(ForwardedFromText);
+
+    public VoicePayload? ParseVoice()
+    {
+        if (!IsVoice || string.IsNullOrWhiteSpace(Text)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(Text);
+            var root = doc.RootElement;
+            string? url = root.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()
+                : root.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
+            int sec = root.TryGetProperty("durationSec", out var d) && d.TryGetInt32(out int v) ? Math.Max(0, v) : 0;
+            if (string.IsNullOrWhiteSpace(url)) return null;
+            return new VoicePayload(url, sec);
+        }
+        catch { return null; }
+    }
 }
 
 public sealed record MessageListResponse(

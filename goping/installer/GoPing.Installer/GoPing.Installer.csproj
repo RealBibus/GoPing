@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GoPing-Setup</AssemblyName>
+    <RootNamespace>GoPing.Installer</RootNamespace>
+    <Product>GoPing Setup</Product>
+    <Version>1.0.0</Version>
+    <Company>GoPing</Company>
+    <Authors>GoPing</Authors>
+    <Description>GoPing Messenger installer</Description>
+    <ApplicationIcon>Resources\goping.ico</ApplicationIcon>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Build script creates this zip from the published app before building the installer. -->
+    <EmbeddedResource Include="Payload\GoPingPayload.zip" LogicalName="GoPingPayload.zip"
+                      Condition="Exists('Payload\GoPingPayload.zip')" />
+  </ItemGroup>
+
+</Project>

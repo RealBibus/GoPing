@@ -23,6 +23,9 @@ public record Message(
         String replyToText,
         String replyToSenderNickname,
         String deliveryStatus,
-        String pinScope
+        String pinScope,
+        Instant editedAt,
+        String forwardedFromSenderNickname,
+        String forwardedFromText
 ) {
 }

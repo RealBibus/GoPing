@@ -21,6 +21,9 @@
   let localStream = null;
   let remoteStream = null;
   let remoteAudio = null;
+  let remoteGainNode = null;
+  let remoteSourceNode = null;
+  let remoteVolume = 1.0;
   let makingOffer = false;
   let ignoreOffer = false;
   let isSettingRemoteAnswerPending = false;
@@ -73,8 +76,23 @@
       remoteAudio = new Audio();
       remoteAudio.autoplay = true;
     }
-    remoteAudio.muted = !!deafened;
+    // When remote audio is routed through WebAudio GainNode, keep element muted to avoid double playback.
+    remoteAudio.muted = !!deafened || !!remoteGainNode;
     return remoteAudio;
+  }
+
+  function applyRemoteVolume() {
+    const v = Math.max(0, Math.min(4, Number(remoteVolume) || 1));
+    remoteVolume = v;
+    if (remoteGainNode) {
+      try { remoteGainNode.gain.value = deafened ? 0 : v; } catch (_) {}
+    }
+    if (remoteAudio) {
+      remoteAudio.muted = !!deafened || !!remoteGainNode;
+      if (!remoteGainNode) {
+        try { remoteAudio.volume = Math.max(0, Math.min(1, deafened ? 0 : v)); } catch (_) {}
+      }
+    }
   }
 
   async function ensureLocalMedia() {
@@ -121,13 +139,33 @@
     const ctx = ensureAudioContext();
     if (!ctx || !stream) return;
     try {
+      if (remoteSourceNode) {
+        try { remoteSourceNode.disconnect(); } catch (_) {}
+        remoteSourceNode = null;
+      }
       const source = ctx.createMediaStreamSource(stream);
+      remoteSourceNode = source;
+
       remoteAnalyser = ctx.createAnalyser();
       remoteAnalyser.fftSize = 512;
       remoteAnalyser.smoothingTimeConstant = 0.4;
       source.connect(remoteAnalyser);
       remoteData = new Uint8Array(remoteAnalyser.frequencyBinCount);
-    } catch (_) {}
+
+      remoteGainNode = ctx.createGain();
+      remoteGainNode.gain.value = deafened ? 0 : Math.max(0, Math.min(2, Number(remoteVolume) || 1));
+      source.connect(remoteGainNode);
+      remoteGainNode.connect(ctx.destination);
+
+      if (remoteAudio) remoteAudio.muted = true;
+    } catch (_) {
+      remoteGainNode = null;
+      remoteSourceNode = null;
+      if (remoteAudio) {
+        remoteAudio.muted = !!deafened;
+        try { remoteAudio.volume = Math.max(0, Math.min(1, deafened ? 0 : (Number(remoteVolume) || 1))); } catch (_) {}
+      }
+    }
   }
 
   function rms(data) {
@@ -293,20 +331,25 @@
         }
         if (wrap) wrap.style.display = 'flex';
         fire('status', 'Screen sharing');
-        track.onended = () => {
+        const clearRemoteVideo = () => {
+          if (remoteVideoTrack !== track) return;
           remoteVideoTrack = null;
           if (video) { try { video.pause(); video.srcObject = null; video.load(); } catch (_) {} }
           if (wrap) wrap.style.display = 'none';
           fire('status', 'Connected');
         };
+        track.onended = clearRemoteVideo;
+        track.onmute = () => setTimeout(clearRemoteVideo, 250);
         return;
       }
       remoteStream = stream;
       const audio = ensureRemoteAudio();
       audio.srcObject = remoteStream;
+      audio.muted = !!deafened;
       const play = audio.play();
       if (play && typeof play.catch === 'function') play.catch(() => {});
       attachRemoteAnalyser(remoteStream);
+      applyRemoteVolume();
     };
 
     pc.onnegotiationneeded = async () => {
@@ -550,21 +593,36 @@
 
     setDeafened(nextDeafened) {
       deafened = !!nextDeafened;
-      const audio = ensureRemoteAudio();
-      audio.muted = deafened;
+      ensureRemoteAudio();
+      applyRemoteVolume();
+    },
+
+    setRemoteVolume(volume) {
+      remoteVolume = Math.max(0, Math.min(4, Number(volume) || 1));
+      ensureRemoteAudio();
+      applyRemoteVolume();
+      return remoteVolume;
+    },
+
+    getRemoteVolume() {
+      return Math.max(0, Math.min(4, Number(remoteVolume) || 1));
     },
 
     async startScreenShare() {
       try {
         if (!pc || pc.signalingState === 'closed') throw new Error('No active call');
-        if (screenStream) { fire('screenState', JSON.stringify({ sharing: true })); return true; }
+        if (screenStream || externalScreenStream) { fire('screenState', JSON.stringify({ sharing: true })); return true; }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
           throw new Error('Screen sharing is not supported in this WebView2 runtime');
         }
         screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
         const track = screenStream.getVideoTracks()[0];
         if (!track) throw new Error('No screen track');
-        screenSender = pc.addTrack(track, screenStream);
+        if (screenSender && pc.getSenders().includes(screenSender)) {
+          await screenSender.replaceTrack(track);
+        } else {
+          screenSender = pc.addTrack(track, screenStream);
+        }
         track.onended = () => { try { window.gopingCall.stopScreenShare(); } catch (_) {} };
         fire('screenState', JSON.stringify({ sharing: true }));
         if (remoteVideoTrack) status('Screen sharing');
@@ -581,10 +639,12 @@
     async stopScreenShare() {
       try {
         showSharePrompt(false);
-        if (screenSender && pc) {
-          try { pc.removeTrack(screenSender); } catch (_) {}
+        if (screenSender) {
+          try { await screenSender.replaceTrack(null); } catch (_) {
+            try { if (pc) pc.removeTrack(screenSender); } catch (_) {}
+            screenSender = null;
+          }
         }
-        screenSender = null;
         if (screenStream) {
           screenStream.getTracks().forEach(t => t.stop());
           screenStream = null;
@@ -610,20 +670,25 @@
       return true;
     },
 
-    startScreenShareExternal(width, height) {
+    async startScreenShareExternal(width, height, fps) {
       try {
         if (!pc || pc.signalingState === 'closed') throw new Error('No active call');
-        if (screenSender || externalScreenStream) { fire('screenState', JSON.stringify({ sharing: true })); return true; }
+        if (externalScreenStream || screenStream) { fire('screenState', JSON.stringify({ sharing: true })); return true; }
         const w = Math.max(1, width|0);
         const h = Math.max(1, height|0);
+        const targetFps = Math.max(10, Math.min(60, fps|0 || 30));
         externalScreenCanvas = document.createElement('canvas');
         externalScreenCanvas.width = w;
         externalScreenCanvas.height = h;
         externalScreenCtx = externalScreenCanvas.getContext('2d');
-        externalScreenStream = externalScreenCanvas.captureStream(10);
+        externalScreenStream = externalScreenCanvas.captureStream(targetFps);
         const track = externalScreenStream.getVideoTracks()[0];
         if (!track) throw new Error('No canvas track');
-        screenSender = pc.addTrack(track, externalScreenStream);
+        if (screenSender && pc.getSenders().includes(screenSender)) {
+          await screenSender.replaceTrack(track);
+        } else {
+          screenSender = pc.addTrack(track, externalScreenStream);
+        }
 
         // Local preview
         const wrap = document.getElementById('wrap');
@@ -698,8 +763,13 @@
       remoteAnalyser = null;
       localData = null;
       remoteData = null;
+      if (remoteSourceNode) { try { remoteSourceNode.disconnect(); } catch (_) {} }
+      remoteSourceNode = null;
+      if (remoteGainNode) { try { remoteGainNode.disconnect(); } catch (_) {} }
+      remoteGainNode = null;
+      remoteVolume = 1.0;
       if (remoteAudio) {
-        try { remoteAudio.srcObject = null; } catch (_) {}
+        try { remoteAudio.srcObject = null; remoteAudio.muted = false; } catch (_) {}
       }
       pendingCandidates = [];
       offerSent = false;
@@ -707,6 +777,10 @@
       muted = false;
       deafened = false;
       status('Ended');
+    },
+
+    hasActivePc() {
+      return !!(pc && pc.signalingState !== 'closed');
     }
   };
 })();

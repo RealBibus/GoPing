@@ -2,6 +2,10 @@
 
 **GoPing - a local messenger for you and your friends, with login via GitHub or a server token!**
 
+> GoPing — мой личный клиент для меня и моих друзей. Хочешь такой же для своей
+> компании? Форкай и переделывай под себя: полный контракт сервера —
+> [docs/API.md](../docs/API.md), гайд для форков — в [корневом README](../README.md#форки-сделай-свой-мессенджер).
+
 GoPing is a small local messenger: a desktop client on Windows (WPF) and a REST
 API server (Spring Boot + SQLite). You and your friends run it on your own
 machine(s); you talk to each other over the local network. Messages are stored

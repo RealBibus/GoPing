@@ -19,24 +19,29 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Аватарки на диске: UPLOAD_DIR/avatars/<uuid>.<ext>.
+ * Медиафайлы на диске: UPLOAD_DIR/avatars/..., UPLOAD_DIR/voice/...
  */
 @Component
 public class MediaStore {
 
     public static final String MEDIA_PREFIX = "/media/avatars/";
+    public static final String VOICE_PREFIX = "/media/voice/";
+    private static final long MAX_VOICE_BYTES = 10L * 1024 * 1024;
 
     private final Path uploadRoot;
     private final Path avatarsDir;
+    private final Path voiceDir;
     private final String publicBaseUrl;
     private final long maxBytes;
 
     public MediaStore(AppProperties properties) throws IOException {
         this.uploadRoot = Paths.get(properties.uploadDir()).toAbsolutePath().normalize();
         this.avatarsDir = uploadRoot.resolve("avatars");
+        this.voiceDir = uploadRoot.resolve("voice");
         this.publicBaseUrl = properties.publicBaseUrl();
         this.maxBytes = properties.maxAvatarBytes();
         Files.createDirectories(avatarsDir);
+        Files.createDirectories(voiceDir);
     }
 
     /** Публичный путь к корню файлов для WebMvcConfigurer. */
@@ -69,6 +74,34 @@ public class MediaStore {
         return MEDIA_PREFIX + fileName;
     }
 
+    /**
+     * Сохраняет голосовое сообщение, возвращает относительный путь /media/voice/....
+     */
+    public String saveVoice(MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_VOICE", "Голосовое сообщение пустое");
+        }
+        if (file.getSize() > MAX_VOICE_BYTES) {
+            throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "VOICE_TOO_LARGE", "Голосовое сообщение слишком большое");
+        }
+        byte[] bytes = file.getBytes();
+        if (bytes.length == 0 || bytes.length > MAX_VOICE_BYTES) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_VOICE", "Голосовое сообщение пустое или слишком большое");
+        }
+
+        String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
+        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
+        String ext = voiceExtension(name, contentType);
+        if (ext == null) {
+            throw new ApiException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE",
+                    "Поддерживаются голосовые файлы webm, ogg, mp3, wav, m4a, mp4");
+        }
+
+        String fileName = UUID.randomUUID() + ext;
+        Files.write(voiceDir.resolve(fileName), bytes);
+        return VOICE_PREFIX + fileName;
+    }
+
     public String url(String avatarPath, String remoteAvatarUrl) {
         if (avatarPath != null && !avatarPath.isEmpty()) {
             return publicBaseUrl + avatarPath;
@@ -77,6 +110,29 @@ public class MediaStore {
             return null;
         }
         return remoteAvatarUrl;
+    }
+
+    public String publicUrl(String path) {
+        if (path == null || path.isBlank()) return null;
+        if (path.startsWith("http://") || path.startsWith("https://")) return path;
+        return publicBaseUrl + path;
+    }
+
+    public void deleteVoice(String voicePath) {
+        if (voicePath == null || !voicePath.startsWith(VOICE_PREFIX)) return;
+        try {
+            Files.deleteIfExists(voiceDir.resolve(Paths.get(voicePath).getFileName().toString()));
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static String voiceExtension(String name, String contentType) {
+        if (name.endsWith(".webm") || contentType.contains("webm")) return ".webm";
+        if (name.endsWith(".ogg") || contentType.contains("ogg")) return ".ogg";
+        if (name.endsWith(".mp3") || contentType.contains("mpeg") || contentType.contains("mp3")) return ".mp3";
+        if (name.endsWith(".wav") || contentType.contains("wav")) return ".wav";
+        if (name.endsWith(".m4a") || contentType.contains("mp4") || contentType.contains("m4a") || name.endsWith(".mp4")) return ".m4a";
+        return null;
     }
 
     public void delete(String avatarPath) {
