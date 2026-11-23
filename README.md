@@ -19,7 +19,6 @@ goping/
   GoPing.Messenger/    Windows WPF client (.NET 10, WebView2)
   installer/           Inno Setup installer and release scripts
 docs/API.md            API reference
-CHANGELOG.md           Change history
 LICENSE                MIT license
 ```
 
@@ -90,7 +89,6 @@ Keep a credit to the original project. See [LICENSE](LICENSE).
 - [docs/API.md](docs/API.md) (REST, WebSocket, encryption, server config)
 - [goping/server/README.md](goping/server/README.md)
 - [goping/GoPing.Messenger/README.md](goping/GoPing.Messenger/README.md)
-- [CHANGELOG.md](CHANGELOG.md)
 
 ## Build and test
 
