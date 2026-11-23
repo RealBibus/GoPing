@@ -1,6 +1,7 @@
 package com.goping.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 import java.util.List;
@@ -28,9 +29,30 @@ public record AppProperties(
         String githubClientId,
         String githubClientSecret,
         String githubCallbackUrl,
-        String githubScope
+        String githubScope,
+        int maxTextLength,
+        int maxVoiceSeconds,
+        int maxCallMinutes,
+        long maxFileBytes,
+        int logLines
 ) {
 
+    /** Backward-compatible constructor for callers that use the 1.0.1 property set. */
+    public AppProperties(String databasePath, String jwtSecret, String jwtIssuer,
+                         Duration accessTokenTtl, Duration refreshTokenTtl, String uploadDir,
+                         String publicBaseUrl, long maxAvatarBytes, int authRateLimit,
+                         int availabilityRateLimit, List<String> corsOrigins, boolean autoMigrate,
+                         Boolean allowDeleteOthersMessages, String adminSecret, String messageKey,
+                         String githubClientId, String githubClientSecret, String githubCallbackUrl,
+                         String githubScope) {
+        this(databasePath, jwtSecret, jwtIssuer, accessTokenTtl, refreshTokenTtl, uploadDir,
+                publicBaseUrl, maxAvatarBytes, authRateLimit, availabilityRateLimit, corsOrigins,
+                autoMigrate, allowDeleteOthersMessages, adminSecret, messageKey, githubClientId,
+                githubClientSecret, githubCallbackUrl, githubScope,
+                4000, 300, 0, 52428800L, 400);
+    }
+
+    @ConstructorBinding
     public AppProperties {
         if (databasePath == null || databasePath.isBlank()) {
             databasePath = "./data/goping.db";
@@ -59,6 +81,21 @@ public record AppProperties(
         publicBaseUrl = publicBaseUrl.replaceAll("/+$", "");
         if (maxAvatarBytes <= 0) {
             maxAvatarBytes = 5L * 1024 * 1024;
+        }
+        if (maxTextLength <= 0) {
+            throw new IllegalStateException("MAX_TEXT_LENGTH must be positive");
+        }
+        if (maxVoiceSeconds <= 0) {
+            throw new IllegalStateException("MAX_VOICE_SECONDS must be positive");
+        }
+        if (maxCallMinutes < 0) {
+            throw new IllegalStateException("MAX_CALL_MINUTES must not be negative");
+        }
+        if (maxFileBytes <= 0) {
+            throw new IllegalStateException("MAX_FILE_BYTES must be positive");
+        }
+        if (logLines <= 0) {
+            throw new IllegalStateException("LOG_LINES must be positive");
         }
         if (authRateLimit <= 0) {
             authRateLimit = 30;

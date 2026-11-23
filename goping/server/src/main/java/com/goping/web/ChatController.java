@@ -143,6 +143,25 @@ public class ChatController {
         }
     }
 
+    @PostMapping(value = "/{chatId}/messages/media", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiDtos.MessageDto> sendMedia(
+            @PathVariable String chatId,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(value = "kind", required = false) String kind,
+            HttpServletRequest request) throws java.io.IOException {
+        UUID id = parseChatId(chatId);
+        MediaStore.StoredMedia stored = media.saveMedia(file);
+        try {
+            Message message = messages.sendMedia(RequestContext.userId(request), id, kind, stored);
+            ApiDtos.MessageDto dto = mapper.message(message);
+            realtime.messageCreated(id, dto);
+            return ResponseEntity.status(HttpStatus.CREATED).body(dto);
+        } catch (RuntimeException e) {
+            media.deleteMedia(stored);
+            throw e;
+        }
+    }
+
     @PatchMapping("/{chatId}/messages/{messageId}")
     public ResponseEntity<ApiDtos.MessageDto> edit(
             @PathVariable String chatId,

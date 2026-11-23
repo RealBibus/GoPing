@@ -27,6 +27,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(RealtimeWebSocketHandler.class);
 
     private final RealtimeHub hub;
+    private final RealtimeEvents events;
     private final PresenceService presence;
     private final ChatService chats;
     private final CallSignalingService calls;
@@ -35,6 +36,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper json;
 
     public RealtimeWebSocketHandler(RealtimeHub hub,
+                                    RealtimeEvents events,
                                     PresenceService presence,
                                     ChatService chats,
                                     CallSignalingService calls,
@@ -42,6 +44,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
                                     DtoMapper mapper,
                                     ObjectMapper json) {
         this.hub = hub;
+        this.events = events;
         this.presence = presence;
         this.chats = chats;
         this.calls = calls;
@@ -61,6 +64,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         hub.register(userId, session);
+        events.limits(userId);
         presence.heartbeat(userId);
         broadcastPresence(userId, true);
         calls.deliverPendingInvites(userId);

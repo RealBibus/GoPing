@@ -23,7 +23,7 @@ Build a jar:
 
 ```powershell
 .\mvnw.cmd -B -DskipTests package
-java -jar target\goping-server-1.0.0.jar
+java -jar target\goping-server-1.0.2.jar
 ```
 
 Run tests with `.\mvnw.cmd test`.
@@ -45,13 +45,37 @@ Environment variables are read from `.env` automatically.
 | `GITHUB_CLIENT_ID` | none | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | none | GitHub OAuth client secret |
 | `GITHUB_CALLBACK_URL` | `http://localhost:8080/api/v1/auth/github/callback` | OAuth callback |
-| `UPLOAD_DIR` | `./data/uploads` | Uploaded files |
-| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base for absolute avatar URLs |
+| `UPLOAD_DIR` | `./data/uploads` | Uploaded avatars, voice and media files |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base for absolute media URLs |
+| `MAX_FILE_BYTES` | `52428800` | Multipart limit and max size for voice and media uploads |
+| `MAX_TEXT_LENGTH` | `4000` | Max message length in code points |
+| `MAX_VOICE_SECONDS` | `300` | Max voice message duration |
+| `MAX_CALL_MINUTES` | `0` | Max call length, 0 means unlimited |
+| `LOG_LINES` | `400` | In-memory log lines kept for the admin logs API |
 | `CORS_ORIGINS` | `*` | Allowed origins |
 | `AUTH_RATE_LIMIT` | `30` | Auth requests per minute per IP |
 | `AVAILABILITY_RATE_LIMIT` | `120` | Username checks per minute per IP |
 
+The four limit values can be changed at runtime with `POST /api/v1/admin/limits` without a restart. Clients receive them in a `limits` WebSocket frame on connect and after each change.
+
 If GitHub credentials are missing, GitHub endpoints return `503 GITHUB_NOT_CONFIGURED`. Token login still works.
+
+## API additions in 1.0.2
+
+| Method | Path | Header or body | Response |
+|---|---|---|---|
+| POST | `/api/v1/chats/{chatId}/messages/media` | multipart `file`, `kind` (`photo`, `video` or `file`) | 201 MessageDto |
+| POST | `/api/v1/chats/{chatId}/polls` | `{"question", "options": [string]}` | 201 PollDto |
+| GET | `/api/v1/chats/{chatId}/polls/{pollId}` | none | 200 PollDto |
+| POST | `/api/v1/chats/{chatId}/polls/{pollId}/vote` | `{"optionId"}` | 200 PollDto |
+| GET | `/api/v1/admin/logs?lines=200` | `X-Admin-Secret` | `{"lines": [string]}`, capped at 1000 lines |
+| POST | `/api/v1/admin/limits` | `X-Admin-Secret`, optional `{"maxTextLength"?, "maxVoiceSeconds"?, "maxCallMinutes"?, "maxFileBytes"?}` | limits DTO |
+
+PollDto fields are `id`, `question`, `options` (`id`, `text`, `votes`), `totalVotes`, `closed`, `votedOptionIdSet` and `myVoteOptionId`. Poll create and vote also send a `poll.updated` frame to chat members. `GET /api/v1/chats` items include `unreadCount` from the stored read timestamp, and `POST /api/v1/chats/{chatId}/read` clears it.
+
+```json
+{ "maxTextLength": 4000, "maxVoiceSeconds": 300, "maxCallMinutes": 0, "maxFileBytes": 52428800 }
+```
 
 ## Server tokens
 

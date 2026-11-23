@@ -72,6 +72,12 @@ public class RealtimeHub {
         }
     }
 
+    public void sendToAll(Map<String, Object> event) {
+        for (UUID userId : sessions.keySet()) {
+            sendToUser(userId, event);
+        }
+    }
+
     public void sendToChat(UUID chatId, Map<String, Object> event) {
         List<UUID> members = chats.listMemberIds(chatId);
         for (UUID memberId : members) {

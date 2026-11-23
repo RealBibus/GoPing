@@ -67,7 +67,6 @@ public partial class MainWindow : Window
     private bool _callEngineReady;
     private AppSettings _appSettings = AppSettingsStore.Load();
     private bool _suppressSettingsSave;
-    private bool _pausedByMinimize;
     private TaskCompletionSource<bool>? _permissionTcs;
     private TaskCompletionSource<ScreenShareSource?>? _screenPickerTcs;
     private int _pendingSequence;
@@ -95,6 +94,7 @@ public partial class MainWindow : Window
 
     public MainWindow(ApiClient api, UserProfile user)
     {
+        CacheService.ApplyPendingClear();
         InitializeComponent();
         SourceInitialized += (_, _) => WindowResizeHelper.Attach(this, () => !_maximized);
         _api = api;
@@ -177,6 +177,8 @@ public partial class MainWindow : Window
             _ = LogServerStatusAsync();
             _ = WarmUpVoiceRecorderAsync();
             _ = CheckForUpdatesSilentAsync();
+            ShowCompletionNotice();
+            InitializeFeatures();
         };
         Closed += (_, _) =>
         {
@@ -239,21 +241,8 @@ public partial class MainWindow : Window
 
     private void OnWindowStateChanged()
     {
-        if (WindowState == WindowState.Minimized)
-        {
-            if (_calls.Current is null)
-            {
-                _pausedByMinimize = true;
-                _realtime.Pause();
-            }
-            return;
-        }
-
-        if (_pausedByMinimize)
-        {
-            _pausedByMinimize = false;
-            _realtime.Resume();
-        }
+        // The realtime socket stays connected while minimized so incoming calls
+        // are never lost. Call visibility is controlled by RaiseWindowOnIncomingCall.
     }
 
     private void MaximizeButton_Click(object sender, RoutedEventArgs e)
@@ -553,13 +542,16 @@ public partial class MainWindow : Window
         }
         for (int i = 0; i < regular.Count; i++)
         {
+            ChatSummary incoming = regular[i];
+            if (_unreadCounts.TryGetValue(incoming.Id, out int unread) && unread > incoming.UnreadCount)
+                incoming = incoming with { UnreadCount = unread };
             if (i < _chatItems.Count)
             {
-                if (_chatItems[i] != regular[i]) _chatItems[i] = regular[i];
+                if (_chatItems[i] != incoming) _chatItems[i] = incoming;
             }
             else
             {
-                _chatItems.Add(regular[i]);
+                _chatItems.Add(incoming);
             }
         }
         while (_chatItems.Count > regular.Count)
@@ -617,6 +609,7 @@ public partial class MainWindow : Window
         bool favorites = chat.IsFavorites;
         // Статус в сети приходит вместе со списком чатов — храним свежий ответ сервера.
         _selectedChat = chat;
+        ClearUnread(chat.Id);
         if (!unchanged)
         {
             ThreadTitle.Text = chat.Title;
@@ -1120,6 +1113,9 @@ public partial class MainWindow : Window
             {
                 await _api.MarkReadAsync(chatId);
                 _readSignature = readSignature;
+                ClearUnread(chatId);
+                if (_selectedChatId == chatId)
+                    await RefreshChatsAsync(selectFirst: false);
             }
         }
         catch (ApiException ex)
@@ -1230,11 +1226,25 @@ public partial class MainWindow : Window
         string? lastId = ordered.Count == 0 ? null : ordered[^1].Id;
         bool lastIsNew = lastId is not null && !_messageRows.ContainsKey(lastId);
 
+        string separatorKey = string.Join("|", ordered.Select(m => m.CreatedAt.ToLocalTime().Date.ToString("yyyy-MM-dd")));
+        if (!string.Equals(separatorKey, _separatorKey, StringComparison.Ordinal))
+        {
+            _separatorKey = separatorKey;
+            MessagesPanel.Children.Clear();
+            _messageRows.Clear();
+        }
+
         var desiredIds = new HashSet<string>(StringComparer.Ordinal);
         int index = 0;
+        DateTime? previousDay = null;
         foreach (ChatMessage message in ordered)
         {
             desiredIds.Add(message.Id);
+            DateTime day = message.CreatedAt.ToLocalTime().Date;
+            string? dayLabel = previousDay is null || previousDay.Value != day
+                ? FormatDaySeparator(day)
+                : null;
+            previousDay = day;
 
             if (_messageRows.TryGetValue(message.Id, out var existing) && existing.Message == message)
             {
@@ -1254,7 +1264,7 @@ public partial class MainWindow : Window
                 _messageRows.Remove(message.Id);
             }
 
-            UIElement row = BuildMessageRow(message);
+            UIElement row = BuildMessageRow(message, dayLabel);
             MessagesPanel.Children.Insert(index, row);
             _messageRows[message.Id] = (message, row);
             index++;
@@ -1278,7 +1288,40 @@ public partial class MainWindow : Window
         }
     }
 
-    private UIElement BuildMessageRow(ChatMessage message)
+    private UIElement BuildMessageRow(ChatMessage message, string? dayLabel = null)
+    {
+        UIElement row = BuildMessageRowCore(message);
+        if (string.IsNullOrWhiteSpace(dayLabel)) return row;
+
+        var wrapper = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        var separator = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12, 4, 12, 4),
+            Margin = new Thickness(0, 2, 0, 12),
+            Child = new TextBlock
+            {
+                Text = dayLabel,
+                FontSize = 11,
+                Foreground = Brushes.MediumPurple
+            }
+        };
+        separator.SetResourceReference(Border.BackgroundProperty, "SurfaceHoverBrush");
+        separator.SetResourceReference(Border.BorderBrushProperty, "BorderBrush");
+        separator.BorderThickness = new Thickness(1);
+        if (Application.Current?.TryFindResource("MutedBrush") is Brush muted)
+            ((TextBlock)separator.Child).Foreground = muted;
+        wrapper.Children.Add(separator);
+        wrapper.Children.Add(row);
+        return wrapper;
+    }
+
+    private UIElement BuildMessageRowCore(ChatMessage message)
     {
             if (message.IsCall)
                 return BuildCallLogRow(message);
@@ -1365,16 +1408,51 @@ public partial class MainWindow : Window
 
             if (message.IsForwarded)
             {
-                var fwd = new TextBlock
+                string fwdName = string.IsNullOrWhiteSpace(message.ForwardedFromSenderNickname)
+                    ? "user" : message.ForwardedFromSenderNickname;
+                var forwardCard = new Border
                 {
-                    Text = "Forwarded from " + (string.IsNullOrWhiteSpace(message.ForwardedFromSenderNickname) ? "user" : message.ForwardedFromSenderNickname),
-                    FontSize = 11,
-                    FontStyle = FontStyles.Italic,
-                    Margin = new Thickness(0, 0, 0, 4),
-                    Opacity = 0.85
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(9, 7, 9, 7),
+                    Margin = new Thickness(0, 0, 0, 8),
+                    BorderThickness = new Thickness(1)
                 };
-                fwd.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "AccentBrush");
-                content.Children.Add(fwd);
+                forwardCard.SetResourceReference(Border.BackgroundProperty, "SurfaceBrush");
+                forwardCard.SetResourceReference(Border.BorderBrushProperty, own ? "PrimaryForegroundBrush" : "BorderBrush");
+
+                var forwardStack = new StackPanel();
+                var forwardHeader = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 3) };
+                forwardHeader.Children.Add(new TextBlock
+                {
+                    Text = "\uE8C2",
+                    FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                    FontSize = 11,
+                    Margin = new Thickness(0, 0, 6, 0)
+                });
+                var forwardSender = new TextBlock
+                {
+                    Text = "Forwarded from " + fwdName,
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                };
+                forwardSender.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+                forwardHeader.Children.Add(forwardSender);
+                forwardStack.Children.Add(forwardHeader);
+
+                if (!string.IsNullOrWhiteSpace(message.ForwardedFromText))
+                {
+                    forwardStack.Children.Add(new TextBlock
+                    {
+                        Text = Shorten(ReplyPreviewDisplayText(message.ForwardedFromText), 140),
+                        FontSize = 11,
+                        TextWrapping = TextWrapping.Wrap,
+                        MaxHeight = 42,
+                        Opacity = 0.85
+                    });
+                }
+                forwardCard.Child = forwardStack;
+                content.Children.Add(forwardCard);
             }
 
             if (message.ReplyTo is not null)
@@ -1420,6 +1498,14 @@ public partial class MainWindow : Window
             if (message.IsVoice)
             {
                 content.Children.Add(BuildVoiceContent(message, own));
+            }
+            else if (string.Equals(message.Kind, "poll", StringComparison.OrdinalIgnoreCase))
+            {
+                content.Children.Add(BuildPollContent(message));
+            }
+            else if (IsMediaKind(message.Kind))
+            {
+                content.Children.Add(BuildMediaContent(message));
             }
             else
             {
@@ -1516,8 +1602,18 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(text)) return "";
         string t = text.TrimStart();
-        if (t.StartsWith("{", StringComparison.Ordinal) && t.Contains("\"durationSec\"", StringComparison.Ordinal) && (t.Contains("\"path\"", StringComparison.Ordinal) || t.Contains("\"url\"", StringComparison.Ordinal)))
-            return "Voice message";
+        if (t.StartsWith("{", StringComparison.Ordinal))
+        {
+            if (t.Contains("\"durationSec\"", StringComparison.Ordinal)
+                && (t.Contains("\"path\"", StringComparison.Ordinal) || t.Contains("\"url\"", StringComparison.Ordinal)))
+                return "Voice message";
+            if (t.Contains("\"status\"", StringComparison.Ordinal) && t.Contains("durationSec", StringComparison.Ordinal))
+                return "Call";
+            if (t.Contains("\"pollId\"", StringComparison.Ordinal) || t.Contains("\"question\"", StringComparison.Ordinal))
+                return "Poll";
+            if (t.Contains("\"sizeBytes\"", StringComparison.Ordinal) && t.Contains("\"fileName\"", StringComparison.Ordinal))
+                return "Attachment";
+        }
         return text;
     }
 
@@ -1580,7 +1676,7 @@ public partial class MainWindow : Window
         btn.SetResourceReference(Control.ForegroundProperty, own ? "PrimaryForegroundBrush" : "TextBrush");
         btn.SetResourceReference(Control.BackgroundProperty, own ? "PrimaryBrush" : "SurfaceHoverBrush");
         btn.BorderThickness = new Thickness(0);
-        btn.Click += (_, _) => ToggleVoicePlayback(btn, url);
+        btn.Click += (_, _) => ToggleVoicePlayback(btn, url, message.Id);
 
         // Декоративная волна, детерминированная по id сообщения
         var wave = new StackPanel
@@ -1611,11 +1707,50 @@ public partial class MainWindow : Window
         btn.Tag = wave;
 
         var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        var sub = new TextBlock { Text = dur > 0 ? FormatDuration(dur) : "Audio", FontSize = 11, Margin = new Thickness(0, 3, 0, 0) };
+        var meta = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 0) };
+        var sub = new TextBlock { Text = dur > 0 ? FormatDuration(dur) : "Audio", FontSize = 11 };
         sub.SetResourceReference(TextBlock.ForegroundProperty, own ? "PrimaryForegroundBrush" : "MutedBrush");
         if (own) sub.Opacity = 0.85;
+        meta.Children.Add(sub);
+
+        var listened = new TextBlock
+        {
+            Text = "\uE73E",
+            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+            FontSize = 10,
+            Margin = new Thickness(6, 0, 0, 0),
+            ToolTip = "Listened",
+            Visibility = IsVoiceListened(message.Id) ? Visibility.Visible : Visibility.Collapsed
+        };
+        listened.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrush");
+        _voiceListenedGlyphs[message.Id] = listened;
+        meta.Children.Add(listened);
+
+        var speedButton = new Button
+        {
+            Content = GetVoiceSpeed(message.Id).ToString("0.#") + "x",
+            FontSize = 10,
+            Width = 34,
+            Height = 20,
+            Padding = new Thickness(0),
+            Margin = new Thickness(8, -2, 0, 0),
+            Cursor = Cursors.Hand,
+            ToolTip = "Playback speed"
+        };
+        speedButton.SetResourceReference(Control.ForegroundProperty, own ? "PrimaryForegroundBrush" : "MutedBrush");
+        speedButton.Background = Brushes.Transparent;
+        speedButton.BorderThickness = new Thickness(0);
+        speedButton.Click += (_, _) =>
+        {
+            double speed = CycleVoiceSpeed(message.Id);
+            speedButton.Content = speed.ToString("0.#") + "x";
+            if (string.Equals(_activeVoiceMessageId, message.Id, StringComparison.OrdinalIgnoreCase))
+                _voicePlayer.SpeedRatio = speed;
+        };
+        meta.Children.Add(speedButton);
+
         stack.Children.Add(wave);
-        stack.Children.Add(sub);
+        stack.Children.Add(meta);
 
         Grid.SetColumn(btn, 0);
         Grid.SetColumn(stack, 1);
@@ -1647,7 +1782,7 @@ public partial class MainWindow : Window
         _activeVoiceBars = null;
     }
 
-    private void ToggleVoicePlayback(Button btn, string url)
+    private void ToggleVoicePlayback(Button btn, string url, string messageId)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
         try
@@ -1660,6 +1795,7 @@ public partial class MainWindow : Window
                 ResetVoicePlaybackVisual();
                 _activeVoiceButton = null;
                 _activeVoiceUrl = null;
+                _activeVoiceMessageId = null;
                 return;
             }
 
@@ -1668,12 +1804,17 @@ public partial class MainWindow : Window
             ResetVoicePlaybackVisual();
 
             _voicePlayer.Stop();
+            _voicePlayer.SpeedRatio = GetVoiceSpeed(messageId);
             _voicePlayer.Open(new Uri(url));
             _voicePlayer.Play();
             _activeVoiceUrl = url;
             _activeVoiceButton = btn;
+            _activeVoiceMessageId = messageId;
             _activeVoiceBars = btn.Tag as System.Windows.Controls.StackPanel;
             ((TextBlock)btn.Content).Text = "\uE769";
+            MarkVoiceListened(messageId);
+            if (_voiceListenedGlyphs.TryGetValue(messageId, out TextBlock? glyph))
+                glyph.Visibility = Visibility.Visible;
             _voicePlayer.MediaEnded -= VoicePlayer_MediaEnded;
             _voicePlayer.MediaEnded += VoicePlayer_MediaEnded;
             _voicePlayTimer.Start();
@@ -1687,9 +1828,16 @@ public partial class MainWindow : Window
         {
             if (_activeVoiceButton is not null)
                 ((TextBlock)_activeVoiceButton.Content).Text = "\uE768";
+            if (_activeVoiceMessageId is not null)
+            {
+                MarkVoiceListened(_activeVoiceMessageId);
+                if (_voiceListenedGlyphs.TryGetValue(_activeVoiceMessageId, out TextBlock? glyph))
+                    glyph.Visibility = Visibility.Visible;
+            }
             ResetVoicePlaybackVisual();
             _activeVoiceButton = null;
             _activeVoiceUrl = null;
+            _activeVoiceMessageId = null;
         });
     }
 
@@ -2733,6 +2881,11 @@ public partial class MainWindow : Window
 
         string text = MessageBox.Text.Trim();
         if (text.Length == 0) return;
+        if (text.Length > _appSettings.MaxTextLength)
+        {
+            SetChatStatus($"Message is too long. Limit is {_appSettings.MaxTextLength} characters.", true);
+            return;
+        }
 
         if (_editingMessage is not null)
         {
@@ -2992,6 +3145,13 @@ public partial class MainWindow : Window
             CallOverlay.Visibility = Visibility.Visible;
             FadeIn(CallOverlay);
             UpdateCallButton();
+
+            if (_appSettings.NativeNotifications && (!IsActive || WindowState == WindowState.Minimized))
+            {
+                NotificationService.ShowCall(call.PeerName, "Incoming voice call",
+                    new NotificationAction("Answer", () => Dispatcher.Invoke(() =>
+                        CallAcceptButton_Click(this, new RoutedEventArgs()))));
+            }
         }));
     }
 
@@ -3476,7 +3636,32 @@ public partial class MainWindow : Window
 
         try
         {
-            if (type is "typing" or "pong") return;
+            if (type == "pong") return;
+
+            if (type == "typing")
+            {
+                string? typingChat = ReadString(root, "chatId");
+                string? typingUser = ReadString(root, "userId");
+                if (!string.IsNullOrWhiteSpace(typingChat)
+                    && !string.Equals(typingUser, _user.Id, StringComparison.Ordinal))
+                    ShowPeerTyping(typingChat);
+                return;
+            }
+
+            if (type == "limits")
+            {
+                if (root.TryGetProperty("limits", out JsonElement limitsNode))
+                {
+                    try
+                    {
+                        LimitsConfig? limits = JsonSerializer.Deserialize<LimitsConfig>(
+                            limitsNode.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                        if (limits is not null) ApplyLimitsFromRealtime(limits);
+                    }
+                    catch (JsonException) { }
+                }
+                return;
+            }
 
             if (type == "presence")
             {
@@ -3519,12 +3704,24 @@ public partial class MainWindow : Window
                         && _appSettings.ShowMessageNotifications
                         && (!IsActive || !string.Equals(chatId, _selectedChatId, StringComparison.Ordinal)))
                     {
+                        if (!string.IsNullOrWhiteSpace(chatId)) IncrementUnread(chatId);
                         string sender = !string.IsNullOrWhiteSpace(created.Sender.Nickname)
                             ? created.Sender.Nickname
                             : created.Sender.Username;
-                        string body = created.Text ?? string.Empty;
+                        string body = MessageDisplayText(created);
+                        if (created.IsForwarded && !string.IsNullOrWhiteSpace(created.ForwardedFromSenderNickname))
+                            body = "Forwarded from " + created.ForwardedFromSenderNickname + ": " + body;
                         if (body.Length > 140) body = body[..140] + "…";
-                        ShowInAppNotification(sender, body, created.Sender.AvatarUrl, chatId);
+                        ShowNativeMessageNotification(sender, body, chatId);
+                    }
+                    break;
+
+                case "poll.updated":
+                    await RefreshChatsAsync(selectFirst: false);
+                    if (chatId == _selectedChatId)
+                    {
+                        _messageSignature = string.Empty;
+                        await LoadMessagesAsync();
                     }
                     break;
 
@@ -4189,7 +4386,7 @@ public partial class MainWindow : Window
         UpdateInstallButton.Visibility = Visibility.Visible;
 
         string notes = string.IsNullOrWhiteSpace(info.Notes) ? "" : info.Notes.Trim();
-        if (notes.Length > 4000) notes = notes[..4000] + "\n…";
+        if (notes.Length > 16000) notes = notes[..16000] + "\n… (release notes truncated)";
         if (notes.Length > 0)
         {
             UpdateNotesHeader.Visibility = Visibility.Visible;
@@ -4241,6 +4438,10 @@ public partial class MainWindow : Window
             UpdateInstallButton.Content = "Install update";
             UpdateStatusText.Text = $"Version {info.Version} downloaded. Click Install update to apply and restart.";
             AppLog.Info("Update downloaded: " + file);
+            NotificationService.ShowUpdateReady(info, new NotificationAction("Install now", () =>
+            {
+                Dispatcher.Invoke(() => UpdateInstallButton_Click(this, new RoutedEventArgs()));
+            }));
         }
         catch (Exception ex)
         {
@@ -4325,12 +4526,9 @@ public partial class MainWindow : Window
                 return;
             }
 
-            UpdateStatusText.Text = "Preparing update…";
-            string staging = UpdateService.ExtractToStaging(file, info);
-
             UpdateStatusText.Text = "Installing… GoPing will restart in a moment.";
-            AppLog.Info("Installing update " + info.Version + "…");
-            UpdateService.LaunchUpdaterAndRestart(staging);
+            AppLog.Info("Installing update " + info.Version + " (" + (info.IsInstaller ? "installer" : "zip") + ")…");
+            UpdateService.ApplyAndRestart(info, file);
             await Task.Delay(600);
             Application.Current.Shutdown();
         }

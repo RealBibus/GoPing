@@ -1,16 +1,16 @@
 <#
 .SYNOPSIS
-Готовит файлы релиза GoPing для загрузки в GitHub Releases.
+Prepares GoPing release files for upload to GitHub Releases.
 
 .DESCRIPTION
-1. Публикует GoPing.Messenger (self-contained, win-x64).
-2. Упаковывает publish в output\GoPing-win-x64.zip.
-3. Считает sha256 и кладёт рядом output\GoPing-win-x64.zip.sha256.
+1. Publishes GoPing.Messenger (self-contained, win-x64).
+2. Packs the publish output into output\GoPing-win-x64.zip.
+3. Writes the sha256 next to it as output\GoPing-win-x64.zip.sha256.
 
-Дальше вручную:
-1. Создай на GitHub релиз с тегом v{версия из csproj}, например v1.0.1.
-2. Прикрепи к релизу GoPing-win-x64.zip и GoPing-win-x64.zip.sha256.
-3. Клиенты увидят обновление автоматически (репозиторий RealBibus/GoPing зашит в код).
+Manual steps after this script:
+1. Create a GitHub release with tag v{version from csproj}, for example v1.0.2.
+2. Attach GoPing-win-x64.zip and GoPing-win-x64.zip.sha256.
+3. Clients discover the update automatically. The repository RealBibus/GoPing is built in.
 
 Usage:
   powershell -ExecutionPolicy Bypass -File .\installer\make-release.ps1
@@ -30,10 +30,10 @@ $project = Join-Path $repoRoot 'GoPing.Messenger\GoPing.Messenger.csproj'
 $publishDir = Join-Path $scriptDir 'publish\win-x64'
 $outputDir = Join-Path $scriptDir 'output'
 
-# Версия из csproj
+# Version from csproj
 [xml]$csproj = Get-Content $project
 $version = $csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-if (-not $version) { $version = '1.0.0' }
+if (-not $version) { $version = '1.0.2' }
 
 Write-Host "==> Publishing GoPing v$version" -ForegroundColor Cyan
 & (Join-Path $scriptDir 'build-installer.ps1') -Configuration $Configuration -SkipInstaller

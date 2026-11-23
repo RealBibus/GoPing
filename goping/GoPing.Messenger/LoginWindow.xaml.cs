@@ -21,12 +21,48 @@ public partial class LoginWindow : Window
     {
         InitializeComponent();
         _api = api;
-        Loaded += (_, _) => Keyboard.Focus(TokenBox);
+        if (StartServerButton is not null)
+            StartServerButton.Click += StartServerButton_Click;
+        Loaded += (_, _) =>
+        {
+            Keyboard.Focus(TokenBox);
+            _ = CheckServerStatusAsync();
+        };
         Closed += (_, _) =>
         {
             _cts.Cancel();
             _cts.Dispose();
         };
+    }
+
+    private async Task CheckServerStatusAsync()
+    {
+        if (ServerStatusText is null) return;
+        bool running = await HostControlService.IsServerRunningAsync();
+        ServerStatusText.Text = running
+            ? "Local server is running at " + HostControlService.ApiUrl + "."
+            : "Local server is not running.";
+    }
+
+    private async void StartServerButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+        SetBusy(true, "Starting the local server…");
+        StartServerButton.IsEnabled = false;
+        try
+        {
+            await HostControlService.StartServerAsync();
+            await CheckServerStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Server start failed: " + ex.Message, true);
+        }
+        finally
+        {
+            StartServerButton.IsEnabled = true;
+            SetBusy(false);
+        }
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

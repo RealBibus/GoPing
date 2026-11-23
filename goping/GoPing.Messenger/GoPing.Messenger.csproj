@@ -10,9 +10,9 @@
     <AssemblyName>GoPing</AssemblyName>
     <RootNamespace>GoPing</RootNamespace>
     <Product>GoPing</Product>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Version>1.0.2</Version>
+    <FileVersion>1.0.2.0</FileVersion>
+    <AssemblyVersion>1.0.2.0</AssemblyVersion>
     <Company>GoPing</Company>
     <Authors>GoPing</Authors>
     <Description>GoPing - a local messenger for you and your friends, with login via GitHub or a server token!</Description>

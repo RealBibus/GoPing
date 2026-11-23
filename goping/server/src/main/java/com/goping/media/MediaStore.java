@@ -1,6 +1,7 @@
 package com.goping.media;
 
 import com.goping.config.AppProperties;
+import com.goping.config.LiveLimits;
 import com.goping.error.ApiException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -14,34 +15,48 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.YearMonth;
+import java.time.ZoneOffset;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * Медиафайлы на диске: UPLOAD_DIR/avatars/..., UPLOAD_DIR/voice/...
+ * Медиафайлы на диске: UPLOAD_DIR/avatars/..., UPLOAD_DIR/voice/..., UPLOAD_DIR/media/YYYY/MM/...
  */
 @Component
 public class MediaStore {
 
     public static final String MEDIA_PREFIX = "/media/avatars/";
     public static final String VOICE_PREFIX = "/media/voice/";
-    private static final long MAX_VOICE_BYTES = 10L * 1024 * 1024;
+    public static final String CHAT_MEDIA_PREFIX = "/media/media/";
+
+    private static final Map<String, String> MEDIA_TYPES = mediaTypes();
 
     private final Path uploadRoot;
     private final Path avatarsDir;
     private final Path voiceDir;
+    private final Path chatMediaDir;
     private final String publicBaseUrl;
     private final long maxBytes;
+    private final LiveLimits limits;
 
-    public MediaStore(AppProperties properties) throws IOException {
+    public record StoredMedia(String path, String fileName, long sizeBytes, String mime, Path absolutePath) {
+    }
+
+    public MediaStore(AppProperties properties, LiveLimits limits) throws IOException {
         this.uploadRoot = Paths.get(properties.uploadDir()).toAbsolutePath().normalize();
         this.avatarsDir = uploadRoot.resolve("avatars");
         this.voiceDir = uploadRoot.resolve("voice");
+        this.chatMediaDir = uploadRoot.resolve("media");
         this.publicBaseUrl = properties.publicBaseUrl();
         this.maxBytes = properties.maxAvatarBytes();
+        this.limits = limits;
         Files.createDirectories(avatarsDir);
         Files.createDirectories(voiceDir);
+        Files.createDirectories(chatMediaDir);
     }
 
     /** Публичный путь к корню файлов для WebMvcConfigurer. */
@@ -81,11 +96,12 @@ public class MediaStore {
         if (file == null || file.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_VOICE", "Голосовое сообщение пустое");
         }
-        if (file.getSize() > MAX_VOICE_BYTES) {
+        long fileLimit = limits.get().maxFileBytes();
+        if (file.getSize() > fileLimit) {
             throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "VOICE_TOO_LARGE", "Голосовое сообщение слишком большое");
         }
         byte[] bytes = file.getBytes();
-        if (bytes.length == 0 || bytes.length > MAX_VOICE_BYTES) {
+        if (bytes.length == 0 || bytes.length > fileLimit) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_VOICE", "Голосовое сообщение пустое или слишком большое");
         }
 
@@ -100,6 +116,51 @@ public class MediaStore {
         String fileName = UUID.randomUUID() + ext;
         Files.write(voiceDir.resolve(fileName), bytes);
         return VOICE_PREFIX + fileName;
+    }
+
+    /** Stores chat media under media/YYYY/MM and returns its public path. */
+    public StoredMedia saveMedia(MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Файл пустой");
+        }
+        long fileLimit = limits.get().maxFileBytes();
+        if (file.getSize() > fileLimit) {
+            throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "FILE_TOO_LARGE", "Файл слишком большой");
+        }
+        byte[] bytes = file.getBytes();
+        if (bytes.length == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Файл пустой");
+        }
+        if (bytes.length > fileLimit) {
+            throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "FILE_TOO_LARGE", "Файл слишком большой");
+        }
+
+        String originalName = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
+        String extension = safeExtension(originalName);
+        String mime = MEDIA_TYPES.get(extension);
+        if (mime == null) {
+            throw new ApiException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE",
+                    "Неподдерживаемое расширение файла");
+        }
+
+        YearMonth month = YearMonth.now(ZoneOffset.UTC);
+        String folder = String.format(Locale.ROOT, "%04d/%02d", month.getYear(), month.getMonthValue());
+        Path targetDir = chatMediaDir.resolve(folder.replace('/', java.io.File.separatorChar));
+        Files.createDirectories(targetDir);
+        String fileName = UUID.randomUUID() + "." + extension;
+        Path target = targetDir.resolve(fileName);
+        Files.write(target, bytes);
+        return new StoredMedia(CHAT_MEDIA_PREFIX + folder + "/" + fileName,
+                safeFileName(originalName), bytes.length, mime, target);
+    }
+
+    public void deleteMedia(StoredMedia media) {
+        if (media == null) return;
+        try {
+            Files.deleteIfExists(media.absolutePath());
+        } catch (IOException ignored) {
+            // The insert already failed, so a leftover file is not critical.
+        }
     }
 
     public String url(String avatarPath, String remoteAvatarUrl) {
@@ -182,6 +243,63 @@ public class MediaStore {
         } catch (IOException e) {
             throw unsupported();
         }
+    }
+
+    private static String safeExtension(String rawName) {
+        String name = safeFileName(rawName);
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) {
+            return "";
+        }
+        String extension = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        return extension.matches("[a-z0-9]{1,10}") ? extension : "";
+    }
+
+    private static String safeFileName(String rawName) {
+        String name = rawName == null ? "" : rawName.replace('\\', '/');
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        StringBuilder safe = new StringBuilder();
+        for (int i = 0; i < name.length() && safe.length() < 200; i++) {
+            char c = name.charAt(i);
+            if (Character.isISOControl(c) || c == '"' || c == '\\' || c == '/' || c == ':') {
+                continue;
+            }
+            safe.append(c);
+        }
+        return safe.toString();
+    }
+
+    private static Map<String, String> mediaTypes() {
+        Map<String, String> types = new LinkedHashMap<>();
+        types.put("jpg", "image/jpeg");
+        types.put("jpeg", "image/jpeg");
+        types.put("png", "image/png");
+        types.put("gif", "image/gif");
+        types.put("webp", "image/webp");
+        types.put("mp4", "video/mp4");
+        types.put("webm", "video/webm");
+        types.put("mov", "video/quicktime");
+        types.put("mp3", "audio/mpeg");
+        types.put("ogg", "audio/ogg");
+        types.put("wav", "audio/wav");
+        types.put("m4a", "audio/mp4");
+        types.put("pdf", "application/pdf");
+        types.put("txt", "text/plain");
+        types.put("csv", "text/csv");
+        types.put("json", "application/json");
+        types.put("zip", "application/zip");
+        types.put("7z", "application/x-7z-compressed");
+        types.put("rar", "application/x-rar-compressed");
+        types.put("doc", "application/msword");
+        types.put("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        types.put("xls", "application/vnd.ms-excel");
+        types.put("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        types.put("ppt", "application/vnd.ms-powerpoint");
+        types.put("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        return Map.copyOf(types);
     }
 
     private ApiException unsupported() {

@@ -1,7 +1,9 @@
 package com.goping.realtime;
 
+import com.goping.config.LiveLimits;
 import com.goping.repository.ChatRepository;
 import com.goping.service.ChatService;
+import com.goping.web.ClientConfigController;
 import com.goping.web.DtoMapper;
 import com.goping.web.dto.ApiDtos;
 import org.springframework.context.annotation.Lazy;
@@ -18,15 +20,18 @@ public class RealtimeEvents {
     private final ChatRepository chats;
     private final ChatService chatService;
     private final DtoMapper mapper;
+    private final LiveLimits limits;
 
     public RealtimeEvents(RealtimeHub hub,
                           ChatRepository chats,
                           @Lazy ChatService chatService,
-                          DtoMapper mapper) {
+                          DtoMapper mapper,
+                          LiveLimits limits) {
         this.hub = hub;
         this.chats = chats;
         this.chatService = chatService;
         this.mapper = mapper;
+        this.limits = limits;
     }
 
     public void messageCreated(UUID chatId, ApiDtos.MessageDto message) {
@@ -88,6 +93,31 @@ public class RealtimeEvents {
         event.put("chatId", chatId.toString());
         event.put("userId", userId.toString());
         hub.sendToChatExcept(chatId, userId, event);
+    }
+
+    /** Sent once right after a WebSocket connection is registered. */
+    public void limits(UUID userId) {
+        hub.sendToUser(userId, limitsEvent());
+    }
+
+    /** Broadcast after the admin API changes a runtime limit. */
+    public void limitsChanged() {
+        hub.sendToAll(limitsEvent());
+    }
+
+    private Map<String, Object> limitsEvent() {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "limits");
+        event.put("limits", ClientConfigController.dto(limits.get()));
+        return event;
+    }
+
+    public void pollUpdated(UUID chatId, ApiDtos.PollDto poll) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "poll.updated");
+        event.put("chatId", chatId.toString());
+        event.put("poll", poll);
+        hub.sendToChat(chatId, event);
     }
 
     public void messagesRead(UUID chatId, UUID readerId, UUID upToMessageId, java.time.Instant readAt) {

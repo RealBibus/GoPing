@@ -17,7 +17,7 @@
         TextOptions.TextRenderingMode="ClearType"
          PreviewKeyDown="Window_PreviewKeyDown">
     <Grid x:Name="WindowRoot">
-        <Border x:Name="RootBorder" CornerRadius="10"
+        <Border x:Name="RootBorder" CornerRadius="16"
                 Background="{DynamicResource BgBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1">
@@ -198,6 +198,7 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
                                                 <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
                                             <Grid Width="40" Height="40" Margin="0,0,10,0">
                                                 <Ellipse x:Name="ItemAvatar" Width="40" Height="40"
@@ -234,6 +235,18 @@
                                                     </TextBlock.Style>
                                                 </TextBlock>
                                             </StackPanel>
+                                            <Border x:Name="UnreadBadge" Grid.Column="2"
+                                                    Background="{DynamicResource AccentBrush}"
+                                                    CornerRadius="10" MinWidth="20" Padding="4,2"
+                                                    Margin="0,0,8,0" HorizontalAlignment="Right"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding UnreadCount}"
+                                                           FontSize="11" FontWeight="SemiBold"
+                                                           Foreground="White"
+                                                           TextAlignment="Center"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"/>
+                                            </Border>
                                         </Grid>
                                         <DataTemplate.Triggers>
                                             <DataTrigger Binding="{Binding IsFavorites}" Value="True">
@@ -241,6 +254,12 @@
                                                         Value="{DynamicResource FavoritesBrush}"/>
                                                 <Setter TargetName="InitialText" Property="Visibility" Value="Collapsed"/>
                                                 <Setter TargetName="FavoritesIcon" Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding UnreadCount}" Value="0">
+                                                <Setter TargetName="UnreadBadge" Property="Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding UnreadCount}" Value="{x:Null}">
+                                                <Setter TargetName="UnreadBadge" Property="Visibility" Value="Collapsed"/>
                                             </DataTrigger>
                                         </DataTemplate.Triggers>
                                     </DataTemplate>
@@ -506,6 +525,33 @@
                                                          Click="CancelReplyButton_Click"/>
                                              </Grid>
                                          </Border>
+                                          <Border x:Name="PollComposerPanel" Visibility="Collapsed"
+                                                  Background="{DynamicResource AccentSoftBrush}"
+                                                  BorderBrush="{DynamicResource BorderBrush}"
+                                                  BorderThickness="1" CornerRadius="10"
+                                                  Padding="12" Margin="0,0,0,10">
+                                              <StackPanel>
+                                                  <TextBlock Text="Question" FontSize="12" FontWeight="SemiBold"
+                                                             Foreground="{DynamicResource TextBrush}"
+                                                             Margin="0,0,0,6"/>
+                                                  <TextBox x:Name="PollQuestionBox" Style="{StaticResource Field}"/>
+                                                  <TextBlock Text="Options" FontSize="12" FontWeight="SemiBold"
+                                                             Foreground="{DynamicResource TextBrush}"
+                                                             Margin="0,10,0,6"/>
+                                                  <TextBox x:Name="PollOptionsBox" Style="{StaticResource Field}"
+                                                           AcceptsReturn="True" Height="64" TextWrapping="Wrap"
+                                                           VerticalContentAlignment="Top"
+                                                           ToolTip="One option per line"/>
+                                                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                                              Margin="0,10,0,0">
+                                                      <Button x:Name="PollCreateButton" Content="Create poll"
+                                                              Style="{StaticResource PrimaryButton}"/>
+                                                      <Button x:Name="PollCancelButton" Content="Cancel"
+                                                              Style="{StaticResource SecondaryButton}"
+                                                              Margin="8,0,0,0"/>
+                                                  </StackPanel>
+                                              </StackPanel>
+                                          </Border>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto"/>
@@ -513,6 +559,8 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Orientation="Horizontal"
+                                                    VerticalAlignment="Center">
                                         <Button x:Name="EmojiButton" Width="34" Height="34"
                                                 Style="{StaticResource GhostButton}"
                                                 Padding="0" Margin="0,0,6,0"
@@ -536,6 +584,23 @@
                                                 </Canvas>
                                             </Viewbox>
                                         </Button>
+                                        <Button x:Name="AttachButton" Width="34" Height="34"
+                                                Style="{StaticResource GhostButton}"
+                                                Padding="0" Margin="0,0,6,0"
+                                                VerticalAlignment="Center"
+                                                FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                HorizontalContentAlignment="Center"
+                                                Content="&#xE898;" ToolTip="Attach photo, video or file"
+                                                Click="AttachButton_Click"/>
+                                        <Button x:Name="PollButton" Width="34" Height="34"
+                                                Style="{StaticResource GhostButton}"
+                                                Padding="0" Margin="0,0,6,0"
+                                                VerticalAlignment="Center"
+                                                FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                                HorizontalContentAlignment="Center"
+                                                Content="&#xE90A;" ToolTip="Create poll"
+                                                Click="PollButton_Click"/>
+                                        </StackPanel>
                                         <TextBox x:Name="MessageBox" Grid.Column="1" Style="{StaticResource Field}"
                                                  MaxLength="4000" KeyDown="MessageBox_KeyDown"
                                                  ToolTip="Enter — send, Shift+Enter — new line"/>
@@ -880,7 +945,7 @@
 
                         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
                             <StackPanel Margin="40,16,40,40" MaxWidth="640" HorizontalAlignment="Left">
-                                <Border CornerRadius="12" Padding="20" Margin="0,0,0,16"
+                                <Border CornerRadius="14" Padding="20" Margin="0,0,0,16"
                                         Background="{DynamicResource SurfaceBrush}"
                                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
                                     <StackPanel>
@@ -906,7 +971,7 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Border CornerRadius="12" Padding="20" Margin="0,0,0,16"
+                                <Border CornerRadius="14" Padding="20" Margin="0,0,0,16"
                                         Background="{DynamicResource SurfaceBrush}"
                                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
                                     <StackPanel>
@@ -946,7 +1011,7 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Border CornerRadius="12" Padding="20" Margin="0,0,0,16"
+                                <Border CornerRadius="14" Padding="20" Margin="0,0,0,16"
                                         Background="{DynamicResource SurfaceBrush}"
                                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
                                     <StackPanel>
@@ -981,11 +1046,11 @@
                                         <TextBox x:Name="UpdateNotesBox" Style="{StaticResource Field}"
                                                  IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
                                                  VerticalScrollBarVisibility="Auto" FontSize="11"
-                                                 MaxHeight="150" Visibility="Collapsed"/>
+                                                 MaxHeight="420" Visibility="Collapsed"/>
                                     </StackPanel>
                                 </Border>
 
-                                <Border CornerRadius="12" Padding="20"
+                                <Border CornerRadius="14" Padding="20"
                                         Background="{DynamicResource SurfaceBrush}"
                                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Opacity="0.75">
                                     <StackPanel>
@@ -997,6 +1062,99 @@
                                         </StackPanel>
                                         <TextBlock Text="Nothing here yet. New experimental options will appear in this section."
                                                    FontSize="12" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="14" Padding="20" Margin="0,0,0,16"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Servers" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextBrush}" Margin="0,0,0,14"/>
+                                        <ListBox x:Name="ServersListBox" Height="110"
+                                                 Background="{DynamicResource SurfaceBrush}"
+                                                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                 Foreground="{DynamicResource TextBrush}"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                                        <TextBlock x:Name="ActiveServerText" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}"
+                                                   TextWrapping="Wrap" Margin="0,6,0,10"/>
+                                        <TextBlock Text="Server name" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,4"/>
+                                        <TextBox x:Name="NewServerNameBox" Style="{StaticResource Field}"
+                                                 ToolTip="Server name"/>
+                                        <TextBlock Text="Server URL" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,4"/>
+                                        <TextBox x:Name="NewServerUrlBox" Style="{StaticResource Field}"
+                                                 ToolTip="Server URL"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                            <Button x:Name="AddServerButton" Content="Add server"
+                                                    Style="{StaticResource PrimaryButton}"/>
+                                            <Button x:Name="RemoveServerButton" Content="Remove"
+                                                    Style="{StaticResource SecondaryButton}" Margin="8,0,0,0"/>
+                                            <Button x:Name="ResetServersButton" Content="Reset all"
+                                                    Style="{StaticResource GhostButton}" Margin="8,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="14" Padding="20" Margin="0,0,0,16"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Limits" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextBrush}" Margin="0,0,0,14"/>
+                                        <TextBlock Text="Max text length" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,0,0,4"/>
+                                        <TextBox x:Name="MaxTextLengthBox" Style="{StaticResource Field}"/>
+                                        <TextBlock Text="Max voice seconds" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,4"/>
+                                        <TextBox x:Name="MaxVoiceSecondsBox" Style="{StaticResource Field}"/>
+                                        <TextBlock Text="Max call minutes (0 means unlimited)" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,4"/>
+                                        <TextBox x:Name="MaxCallMinutesBox" Style="{StaticResource Field}"/>
+                                        <TextBlock Text="Max file bytes" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,4"/>
+                                        <TextBox x:Name="MaxFileBytesBox" Style="{StaticResource Field}"/>
+                                        <Button x:Name="SaveLimitsButton" Content="Save limits"
+                                                Style="{StaticResource PrimaryButton}" Margin="0,14,0,0"/>
+                                        <TextBlock x:Name="LimitsHintText" Text="" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}"
+                                                   TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="14" Padding="20" Margin="0,0,0,16"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Experimental" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextBrush}" Margin="0,0,0,14"/>
+                                        <CheckBox x:Name="TypingExperimentalCheckBox" Content="Show typing status"
+                                                  Foreground="{DynamicResource TextBrush}" FontSize="13"
+                                                  Margin="0,0,0,10"/>
+                                        <CheckBox x:Name="NativeNotificationsCheckBox" Content="Native notifications"
+                                                  Foreground="{DynamicResource TextBrush}" FontSize="13"
+                                                  Margin="0,0,0,10"/>
+                                        <Button x:Name="ClearCacheButton" Content="Clear cache"
+                                                Style="{StaticResource SecondaryButton}" Margin="0,4,0,0"/>
+                                        <TextBlock x:Name="CacheSizeText" Text="" FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}"
+                                                   TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border CornerRadius="14" Padding="20"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Admin" FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextBrush}" Margin="0,0,0,14"/>
+                                        <Button x:Name="OpenAdminPanelButton" Content="Open admin panel"
+                                                Style="{StaticResource PrimaryButton}"/>
+                                        <TextBlock Text="Requires the server admin secret." FontSize="12"
+                                                   Foreground="{DynamicResource MutedBrush}"
+                                                   TextWrapping="Wrap" Margin="0,8,0,0"/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -1676,6 +1834,44 @@
             </Border>
         </Popup>
 
+        <!-- Media preview popup -->
+        <Popup x:Name="MediaPreviewPopup"
+               IsOpen="False"
+               Placement="Center"
+               StaysOpen="True"
+               AllowsTransparency="True"
+               PopupAnimation="Fade">
+            <Border MaxWidth="760" MaxHeight="560" Padding="16"
+                    CornerRadius="16" Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="22" ShadowDepth="6" Opacity="0.28" Color="#000000"/>
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid x:Name="MediaPreviewStage" MinHeight="240">
+                        <Image x:Name="MediaPreviewImage" Stretch="Uniform"/>
+                        <MediaElement x:Name="MediaPreviewVideo" Stretch="Uniform"
+                                      Visibility="Collapsed"/>
+                    </Grid>
+                    <TextBlock x:Name="MediaFileNameText" Grid.Row="1" FontSize="12"
+                               Foreground="{DynamicResource MutedBrush}"
+                               TextTrimming="CharacterEllipsis" Margin="0,12,0,0"/>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                                Margin="0,12,0,0">
+                        <Button x:Name="MediaSaveButton" Content="Save as..."
+                                Style="{StaticResource PrimaryButton}"/>
+                        <Button x:Name="MediaCloseButton" Content="Close"
+                                Style="{StaticResource GhostButton}" Margin="8,0,0,0"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Popup>
+
         </Grid>
     </Border>
 
@@ -1885,5 +2081,56 @@
                 </Grid>
             </Grid>
         </Border>
+
+        <!-- Admin panel overlay -->
+        <Grid x:Name="AdminPanel" Visibility="Collapsed" Panel.ZIndex="210"
+              Background="#80000000">
+            <Border Width="520" MaxHeight="620" Padding="22"
+                    CornerRadius="14" Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.25" Color="#000000"/>
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="Admin panel" FontSize="20" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}"/>
+                    <PasswordBox x:Name="AdminSecretBox" Grid.Row="1" Height="34"
+                                 Margin="0,16,0,0" Padding="10,6"
+                                 Background="{DynamicResource SurfaceBrush}"
+                                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                 Foreground="{DynamicResource TextBrush}"/>
+                    <Button x:Name="AdminLoadLogsButton" Grid.Row="2" Content="Load logs"
+                            Style="{StaticResource SecondaryButton}" Margin="0,12,0,0"
+                            HorizontalAlignment="Left"/>
+                    <ListBox x:Name="AdminLogsList" Grid.Row="3" Height="220" Margin="0,12,0,0"
+                             Background="{DynamicResource SurfaceBrush}"
+                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                             Foreground="{DynamicResource TextBrush}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                    <Button x:Name="AdminIssueTokenButton" Grid.Row="4" Content="Issue token"
+                            Style="{StaticResource SecondaryButton}" Margin="0,12,0,0"
+                            HorizontalAlignment="Left"/>
+                    <TextBox x:Name="AdminTokenText" Grid.Row="5" Style="{StaticResource Field}"
+                             IsReadOnly="True" Margin="0,8,0,0"/>
+                    <TextBlock x:Name="AdminStatusText" Grid.Row="6" Text="" FontSize="12"
+                               Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap"
+                               Margin="0,8,0,0"/>
+                    <Button x:Name="AdminCloseButton" Grid.Row="7" Content="Close"
+                            Style="{StaticResource GhostButton}" Margin="0,12,0,0"
+                            HorizontalAlignment="Right"/>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

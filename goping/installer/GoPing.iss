@@ -2,11 +2,11 @@
 ; GoPing Messenger — native Inno Setup installer
 ;
 ; Build with:  powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
-; Manual:      ISCC.exe /dAppVersion=1.0.0 GoPing.iss
+; Manual:      ISCC.exe /dAppVersion=1.0.2 GoPing.iss
 ; ---------------------------------------------------------------------------
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.2"
 #endif
 
 #define AppName "GoPing"
@@ -39,7 +39,7 @@ WizardImageFile=Resources\wizard-image.bmp
 WizardSmallImageFile=Resources\wizard-small-image.bmp
 WizardStyle=modern
 
-; Per-user install — no administrator rights required.
+; Per-user install, no administrator rights required.
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

@@ -1,1 +1,0 @@
-tail: cannot open '/tmp/turn.log' for reading: No such file or directory

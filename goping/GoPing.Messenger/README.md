@@ -17,7 +17,7 @@ dotnet build GoPing.Messenger/GoPing.Messenger.csproj
 dotnet run --project GoPing.Messenger
 ```
 
-The client uses `http://localhost:8080` by default. To use another server:
+Without `GOPING_API_URL` the client falls back to `http://26.68.224.240:8080`. To use another server:
 
 ```powershell
 $env:GOPING_API_URL = "http://192.168.1.10:8080"
@@ -36,6 +36,19 @@ Use a `GOPING-...` server token or the GitHub button. GitHub login requires `GIT
 - Chats with edit, forward, reply, pins and search
 - In-app console for server, TURN and Radmin VPN controls
 - Updates from GitHub Releases
+
+### 1.0.2
+
+- Reliable updater for zip and installer releases, with sha256 checks and release notes after update
+- Rounded design and native Windows notifications
+- Voice playback speed up to x4 and a listened marker
+- Polls in chats
+- Media uploads with compression and a media popup with Save as
+- Chat list with unread counts and date separators
+- Server list for switching between saved servers
+- Settings cards for Servers, Limits, Experimental and Admin
+- Admin card for tokens, live limits and recent server logs
+- Cache clearing from settings
 
 ## Data locations
 

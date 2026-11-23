@@ -75,7 +75,8 @@ public final class ApiDtos {
             Instant lastMessageAt,
             boolean peerOnline,
             Instant peerLastSeenAt,
-            boolean peerTyping
+            boolean peerTyping,
+            int unreadCount
     ) {
     }
 
@@ -101,7 +102,38 @@ public final class ApiDtos {
     public record PinRequest(String scope) {
     }
 
-    public record ClientConfigDto(boolean allowDeleteOthersMessages) {
+    public record LimitsDto(int maxTextLength, int maxVoiceSeconds, int maxCallMinutes, long maxFileBytes) {
+    }
+
+    /** Null means "keep the current value" for the admin limits endpoint. */
+    public record UpdateLimitsRequest(Integer maxTextLength, Integer maxVoiceSeconds,
+                                      Integer maxCallMinutes, Long maxFileBytes) {
+    }
+
+    public record AdminLogsResponse(List<String> lines) {
+    }
+
+    public record ClientConfigDto(boolean allowDeleteOthersMessages, LimitsDto limits) {
+    }
+
+    public record PollOptionDto(String id, String text, int votes) {
+    }
+
+    public record PollDto(
+            String id,
+            String question,
+            List<PollOptionDto> options,
+            int totalVotes,
+            boolean closed,
+            boolean votedOptionIdSet,
+            String myVoteOptionId
+    ) {
+    }
+
+    public record CreatePollRequest(String question, List<String> options) {
+    }
+
+    public record VotePollRequest(String optionId) {
     }
 
     public record MessageSenderDto(String id, String username, String nickname, String avatarUrl) {

@@ -2,10 +2,13 @@ package com.goping.realtime;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.goping.config.LiveLimits;
 import com.goping.domain.Message;
 import com.goping.repository.ChatRepository;
 import com.goping.service.MessageService;
 import com.goping.web.DtoMapper;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
@@ -18,6 +21,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Пересылка сигналов для 1:1-звонков. Состояние звонка живёт в памяти сервера:
@@ -55,16 +61,43 @@ public class CallSignalingService {
     private final RealtimeEvents events;
     private final DtoMapper mapper;
     private final ObjectMapper json;
+    private final LiveLimits limits;
     private final ConcurrentHashMap<UUID, CallState> calls = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService sweeper = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "goping-call-sweeper");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public CallSignalingService(RealtimeHub hub, ChatRepository chats, MessageService messages,
-                                @Lazy RealtimeEvents events, DtoMapper mapper, ObjectMapper json) {
+                                @Lazy RealtimeEvents events, DtoMapper mapper, ObjectMapper json,
+                                LiveLimits limits) {
         this.hub = hub;
         this.chats = chats;
         this.messages = messages;
         this.events = events;
         this.mapper = mapper;
         this.json = json;
+        this.limits = limits;
+    }
+
+    @PostConstruct
+    public void startSweeper() {
+        sweeper.scheduleWithFixedDelay(this::sweep, 10, 10, TimeUnit.SECONDS);
+    }
+
+    @PreDestroy
+    public void stopSweeper() {
+        sweeper.shutdownNow();
+    }
+
+    private void sweep() {
+        try {
+            expireStale();
+            expireLongCalls();
+        } catch (Exception e) {
+            log.debug("call sweep failed: {}", e.getMessage());
+        }
     }
 
     public void invite(UUID from, JsonNode root) {
@@ -86,6 +119,7 @@ public class CallSignalingService {
         CallState call = new CallState(callId, chatId, from, peer.get(), Instant.now(), null);
         calls.put(callId, call);
         expireStale();
+        expireLongCalls();
 
         log.info("call invite routed callId={} chatId={} from={} to={} calleeConnected={}",
                 callId, chatId, from, peer.get(), hub.isConnected(peer.get()));
@@ -145,6 +179,7 @@ public class CallSignalingService {
     /** Доставить входящие инвайты, которые ждали, пока пользователь был офлайн. */
     public void deliverPendingInvites(UUID userId) {
         expireStale();
+        expireLongCalls();
         for (CallState call : calls.values()) {
             if (!call.calleeId().equals(userId)) continue;
             if (call.acceptedAt() != null) continue;
@@ -216,18 +251,39 @@ public class CallSignalingService {
         Instant threshold = Instant.now().minus(CALL_TTL);
         for (CallState call : calls.values()) {
             if (call.updatedAt().isBefore(threshold) && calls.remove(call.callId(), call)) {
-                for (UUID member : new UUID[]{call.callerId(), call.calleeId()}) {
-                    Map<String, Object> event = new LinkedHashMap<>();
-                    event.put("type", "call.ended");
-                    event.put("callId", call.callId().toString());
-                    event.put("chatId", call.chatId().toString());
-                    event.put("reason", "timeout");
-                    hub.sendToUser(member, event);
-                }
-                String status = call.acceptedAt() != null ? "ended" : "missed";
-                logCall(call, call.callerId(), status);
+                closeCall(call, "timeout", call.callerId());
             }
         }
+    }
+
+    /** maxCallMinutes = 0 disables this check. */
+    private void expireLongCalls() {
+        int maxMinutes = limits.get().maxCallMinutes();
+        if (maxMinutes <= 0) {
+            return;
+        }
+        Duration maxDuration = Duration.ofMinutes(maxMinutes);
+        Instant now = Instant.now();
+        for (CallState call : calls.values()) {
+            Instant startedAt = call.acceptedAt() == null ? call.updatedAt() : call.acceptedAt();
+            if (Duration.between(startedAt, now).compareTo(maxDuration) > 0
+                    && calls.remove(call.callId(), call)) {
+                closeCall(call, "limit", call.callerId());
+            }
+        }
+    }
+
+    private void closeCall(CallState call, String reason, UUID actorId) {
+        for (UUID member : new UUID[]{call.callerId(), call.calleeId()}) {
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("type", "call.ended");
+            event.put("callId", call.callId().toString());
+            event.put("chatId", call.chatId().toString());
+            event.put("reason", reason);
+            hub.sendToUser(member, event);
+        }
+        String status = call.acceptedAt() != null ? "ended" : "missed";
+        logCall(call, actorId, status);
     }
 
     private static UUID uuid(JsonNode root, String field) {

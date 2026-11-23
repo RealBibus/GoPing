@@ -123,7 +123,8 @@ public class ChatService {
         Instant lastSeen = peerId == null ? null : presence.lastSeenAt(peerId);
         boolean typing = presence.peerTyping(chat.id(), viewerId);
 
-        return new EnrichedChat(chat, preview, lastAt, online, lastSeen, typing);
+        int unread = messages.unreadCount(chat.id(), viewerId);
+        return new EnrichedChat(chat, preview, lastAt, online, lastSeen, typing, unread);
     }
 
     private static String previewText(Message message) {
@@ -182,7 +183,8 @@ public class ChatService {
             Instant lastMessageAt,
             boolean peerOnline,
             Instant peerLastSeenAt,
-            boolean peerTyping
+            boolean peerTyping,
+            int unreadCount
     ) {
     }
 }

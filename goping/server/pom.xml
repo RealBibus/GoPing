@@ -13,7 +13,7 @@
 
     <groupId>com.goping</groupId>
     <artifactId>goping-server</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.2</version>
     <name>goping-server</name>
     <description>GoPing - a local messenger for you and your friends, with login via GitHub or a server token!</description>
 

@@ -1,6 +1,7 @@
 package com.goping;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.goping.config.DeletePolicy;
 import com.goping.github.GitHubClient;
 import org.junit.jupiter.api.BeforeEach;
@@ -701,6 +702,30 @@ class ApiIntegrationTest {
     }
 
     @Test
+    void chatListReportsUnreadCount() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages", bob.accessToken(),
+                "{\"text\":\"unread one\"}");
+        authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages", bob.accessToken(),
+                "{\"text\":\"unread two\"}");
+        authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/messages", alice.accessToken(),
+                "{\"text\":\"my own message\"}");
+
+        JsonNode chats = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
+                .getBody().get("items");
+        JsonNode direct = chatOfKind(chats, "direct");
+        assertThat(direct.get("unreadCount").asInt()).isEqualTo(2);
+
+        authed(HttpMethod.POST, "/api/v1/chats/" + chatId + "/read", alice.accessToken(), null);
+        chats = authed(HttpMethod.GET, "/api/v1/chats", alice.accessToken(), null)
+                .getBody().get("items");
+        assertThat(chatOfKind(chats, "direct").get("unreadCount").asInt()).isZero();
+    }
+
+    @Test
     void chatAndMessageValidation() {
         AuthData alice = tokenLogin(issueToken());
         AuthData bob = tokenLogin(issueToken());
@@ -949,5 +974,175 @@ class ApiIntegrationTest {
                 auth.accessToken(), null).getBody().get("items");
         JsonNode scope = items.get(0).get("pinScope");
         return scope == null || scope.isNull() ? null : scope.asText();
+    }
+
+    // ---------- 1.0.2 additions ----------
+
+    private String favoritesChatId(AuthData auth) {
+        JsonNode items = authed(HttpMethod.GET, "/api/v1/chats", auth.accessToken(), null)
+                .getBody().get("items");
+        return chatOfKind(items, "favorites").get("id").asText();
+    }
+
+    private ResponseEntity<JsonNode> adminPost(String path, String json) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Admin-Secret", ADMIN_SECRET);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return rest.exchange(path, HttpMethod.POST, new HttpEntity<>(json, headers), JsonNode.class);
+    }
+
+    @Test
+    void clientConfigExposesLiveLimitsAndAdminCanChangeThem() {
+        AuthData auth = tokenLogin(issueToken());
+        JsonNode config = authed(HttpMethod.GET, "/api/v1/client-config",
+                auth.accessToken(), null).getBody();
+        JsonNode limits = config.get("limits");
+        assertThat(limits.get("maxTextLength").asInt()).isEqualTo(4000);
+        assertThat(limits.get("maxVoiceSeconds").asInt()).isEqualTo(300);
+        assertThat(limits.get("maxCallMinutes").asInt()).isZero();
+        assertThat(limits.get("maxFileBytes").asLong()).isEqualTo(52428800L);
+
+        try {
+            ResponseEntity<JsonNode> changed = adminPost("/api/v1/admin/limits",
+                    "{\"maxTextLength\":10,\"maxCallMinutes\":0}");
+            assertThat(changed.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(changed.getBody().get("maxTextLength").asInt()).isEqualTo(10);
+
+            config = authed(HttpMethod.GET, "/api/v1/client-config",
+                    auth.accessToken(), null).getBody();
+            assertThat(config.get("limits").get("maxTextLength").asInt()).isEqualTo(10);
+
+            String favorites = favoritesChatId(auth);
+            String tooLong = "x".repeat(11);
+            ResponseEntity<JsonNode> rejected = authed(HttpMethod.POST,
+                    "/api/v1/chats/" + favorites + "/messages", auth.accessToken(),
+                    "{\"text\":\"" + tooLong + "\"}");
+            assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+
+            assertThat(authed(HttpMethod.POST, "/api/v1/chats/" + favorites + "/messages",
+                    auth.accessToken(), "{\"text\":\"" + "x".repeat(10) + "\"}")
+                    .getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        } finally {
+            adminPost("/api/v1/admin/limits", "{\"maxTextLength\":4000}");
+        }
+    }
+
+    @Test
+    void pollsCreateVoteAndForwardWithHumanPreview() {
+        AuthData alice = tokenLogin(issueToken());
+        AuthData bob = tokenLogin(issueToken());
+        String chatId = createDirectChat(alice.accessToken(), bob.username());
+
+        ResponseEntity<JsonNode> created = authed(HttpMethod.POST,
+                "/api/v1/chats/" + chatId + "/polls", alice.accessToken(),
+                "{\"question\":\"Where?\",\"options\":[\"Park\",\"Home\"]}");
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        JsonNode poll = created.getBody();
+        String pollId = poll.get("id").asText();
+        assertThat(poll.get("question").asText()).isEqualTo("Where?");
+        assertThat(poll.get("options").size()).isEqualTo(2);
+        assertThat(poll.get("totalVotes").asInt()).isZero();
+        assertThat(poll.get("closed").asBoolean()).isFalse();
+        assertThat(poll.get("myVoteOptionId").isNull()).isTrue();
+
+        String firstOption = poll.get("options").get(0).get("id").asText();
+        String secondOption = poll.get("options").get(1).get("id").asText();
+        String votePath = "/api/v1/chats/" + chatId + "/polls/" + pollId + "/vote";
+
+        ResponseEntity<JsonNode> voted = authed(HttpMethod.POST, votePath, bob.accessToken(),
+                "{\"optionId\":\"" + firstOption + "\"}");
+        assertThat(voted.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(voted.getBody().get("totalVotes").asInt()).isEqualTo(1);
+        assertThat(voted.getBody().get("myVoteOptionId").asText()).isEqualTo(firstOption);
+        assertThat(voted.getBody().get("options").get(0).get("votes").asInt()).isEqualTo(1);
+
+        ResponseEntity<JsonNode> changed = authed(HttpMethod.POST, votePath, bob.accessToken(),
+                "{\"optionId\":\"" + secondOption + "\"}");
+        assertThat(changed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(changed.getBody().get("totalVotes").asInt()).isEqualTo(1);
+        assertThat(changed.getBody().get("myVoteOptionId").asText()).isEqualTo(secondOption);
+
+        JsonNode read = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/polls/" + pollId,
+                alice.accessToken(), null).getBody();
+        assertThat(read.get("totalVotes").asInt()).isEqualTo(1);
+        assertThat(read.get("myVoteOptionId").isNull()).isTrue();
+
+        JsonNode messages = authed(HttpMethod.GET, "/api/v1/chats/" + chatId + "/messages",
+                alice.accessToken(), null).getBody().get("items");
+        assertThat(messages.size()).isEqualTo(1);
+        JsonNode card = messages.get(0);
+        assertThat(card.get("kind").asText()).isEqualTo("poll");
+        assertThat(card.get("text").asText()).contains(pollId).contains("Where?").contains(firstOption);
+
+        String favorites = favoritesChatId(alice);
+        ResponseEntity<JsonNode> forwarded = authed(HttpMethod.POST,
+                "/api/v1/chats/" + favorites + "/messages/forward", alice.accessToken(),
+                "{\"fromChatId\":\"" + chatId + "\",\"messageId\":\"" + card.get("id").asText() + "\"}");
+        assertThat(forwarded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(forwarded.getBody().get("kind").asText()).isEqualTo("poll");
+        assertThat(forwarded.getBody().get("forwardedFromText").asText()).isEqualTo("Poll: Where?");
+    }
+
+    @Test
+    void mediaUploadStoresEncryptedMessageAndServesFile() throws Exception {
+        AuthData auth = tokenLogin(issueToken());
+        String favorites = favoritesChatId(auth);
+
+        MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
+        form.add("file", new ByteArrayResource(PNG) {
+            @Override
+            public String getFilename() {
+                return "photo.png";
+            }
+        });
+        form.add("kind", "photo");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(auth.accessToken());
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<JsonNode> uploaded = rest.exchange(
+                "/api/v1/chats/" + favorites + "/messages/media", HttpMethod.POST,
+                new HttpEntity<>(form, headers), JsonNode.class);
+
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        JsonNode message = uploaded.getBody();
+        assertThat(message.get("kind").asText()).isEqualTo("photo");
+        JsonNode payload = new ObjectMapper().readTree(message.get("text").asText());
+        String url = payload.get("url").asText();
+        assertThat(url).startsWith("/media/media/").endsWith(".png");
+        assertThat(payload.get("fileName").asText()).isEqualTo("photo.png");
+        assertThat(payload.get("mime").asText()).isEqualTo("image/png");
+
+        ResponseEntity<byte[]> served = rest.getForEntity(url, byte[].class);
+        assertThat(served.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(served.getBody()).isEqualTo(PNG);
+
+        MultiValueMap<String, Object> unsupported = new LinkedMultiValueMap<>();
+        unsupported.add("file", new ByteArrayResource("bad".getBytes()) {
+            @Override
+            public String getFilename() {
+                return "virus.exe";
+            }
+        });
+        unsupported.add("kind", "file");
+        ResponseEntity<JsonNode> rejected = rest.exchange(
+                "/api/v1/chats/" + favorites + "/messages/media", HttpMethod.POST,
+                new HttpEntity<>(unsupported, headers), JsonNode.class);
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    @Test
+    void adminLogsRequireSecretAndReturnRecentLines() {
+        ResponseEntity<JsonNode> missing = rest.getForEntity("/api/v1/admin/logs?lines=5", JsonNode.class);
+        assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Admin-Secret", ADMIN_SECRET);
+        ResponseEntity<JsonNode> response = rest.exchange("/api/v1/admin/logs?lines=5",
+                HttpMethod.GET, new HttpEntity<>(headers), JsonNode.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode lines = response.getBody().get("lines");
+        assertThat(lines.isArray()).isTrue();
+        assertThat(lines.size()).isGreaterThan(0);
+        assertThat(lines.get(lines.size() - 1).asText()).contains("http request");
     }
 }

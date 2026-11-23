@@ -2,6 +2,10 @@
 
 GoPing is a local messenger with a Windows WPF client and a Spring Boot REST server. You run the server yourself and connect over LAN or VPN. Messages are stored encrypted with GOST R 34.12-2015 (Kuznyechik) in CTR mode plus HMAC-SHA256.
 
+## 1.0.2
+
+Adds polls, media uploads, live limits, server-side unread counts, an admin panel and a revised updater. The REST and WebSocket contract, including the new endpoints, `limits` frames and `unreadCount` field, is in [docs/API.md](../docs/API.md).
+
 ## Login
 
 - GitHub: the browser flow fills the avatar and nickname on first login. You can edit both later.

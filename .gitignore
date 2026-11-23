@@ -400,7 +400,7 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 
-# GoPing: локальные секреты, сессии и базы данных
+# GoPing: local secrets, sessions and databases
 .env
 .env.*
 !.env.example
@@ -413,11 +413,24 @@ tokens.json
 crash.log
 data/
 
-# GoPing: артефакты сборки (.NET и Maven)
+# GoPing: build artifacts (.NET and Maven)
 **/bin/
 **/obj/
 **/target/
 publish/
 
-# GoPing: локальный набор эмодзи (~176 МБ, 2358 SVG) — не коммитим в GitHub
+# GoPing: installer and release artifacts
+goping/installer/output/
+goping/installer/_testbuild/
+goping/installer/publish.rar
+goping/installer/*.zip
+goping/installer/*.sha256
+
+# GoPing: temporary local files
+tmp_*.txt
+goping/tmp_clean.ps1
+*.out.log
+*.err.log
+
+# GoPing: local emoji set (about 176 MB, 2358 SVG files)
 **/emojiP/

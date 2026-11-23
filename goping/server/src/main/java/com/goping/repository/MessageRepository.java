@@ -212,6 +212,30 @@ public class MessageRepository {
                 at.toEpochMilli());
     }
 
+    /**
+     * Number of messages the viewer has not read yet. Own messages, hidden
+     * messages and anything at or before the stored read timestamp are skipped.
+     */
+    public int unreadCount(UUID chatId, UUID viewerId) {
+        Integer count = jdbc.queryForObject("""
+                        SELECT COUNT(*)
+                        FROM messages m
+                        WHERE m.chat_id = ?
+                          AND m.sender_id <> ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM message_hides h
+                              WHERE h.message_id = m.id AND h.user_id = ?
+                          )
+                          AND m.created_at > COALESCE((
+                              SELECT r.last_read_at FROM chat_reads r
+                              WHERE r.chat_id = m.chat_id AND r.user_id = ?
+                          ), 0)
+                        """,
+                Integer.class,
+                chatId.toString(), viewerId.toString(), viewerId.toString(), viewerId.toString());
+        return count == null ? 0 : count;
+    }
+
     public Optional<Instant> peerReadAt(UUID chatId, UUID viewerId) {
         List<Instant> rows = jdbc.query("""
                         SELECT last_read_at

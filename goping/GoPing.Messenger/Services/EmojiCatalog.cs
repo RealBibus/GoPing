@@ -29,6 +29,15 @@ internal static class EmojiCatalog
     private static Dictionary<string, int>? _unicodeToNumber;
     private static string[]? _unicodePatterns;
 
+    /// <summary>Releases decoded emoji bitmaps without dropping the file catalog.</summary>
+    public static void ClearCache()
+    {
+        lock (ImageCache)
+        {
+            ImageCache.Clear();
+        }
+    }
+
     public static bool IsInstalled => DirectoryPath is not null;
 
     public static string? DirectoryPath { get; } = FindDirectory();

@@ -16,12 +16,14 @@ public sealed class ApiClient : IDisposable
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
+    private const string DefaultBaseUrl = "http://26.68.224.240:8080";
+
     private readonly HttpClient _http;
     private string? _accessToken;
     private string? _refreshToken;
     private DateTimeOffset? _expiresAt;
 
-    public string BaseUrl { get; }
+    public string BaseUrl { get; private set; }
     public string? RefreshToken => _refreshToken;
 
     /// <summary>Returns a current access token, refreshing it when needed.</summary>
@@ -45,7 +47,7 @@ public sealed class ApiClient : IDisposable
     {
         string? configured = baseUrl ?? Environment.GetEnvironmentVariable("GOPING_API_URL");
         BaseUrl = string.IsNullOrWhiteSpace(configured)
-            ? "http://26.68.224.240:8080"
+            ? DefaultBaseUrl
             : configured.TrimEnd('/');
 
         _http = new HttpClient
@@ -54,6 +56,17 @@ public sealed class ApiClient : IDisposable
             Timeout = TimeSpan.FromSeconds(20)
         };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("GoPing-Client/1.0");
+    }
+
+    /// <summary>Switches server at runtime; the WebSocket builder follows BaseUrl.</summary>
+    public void SetBaseUrl(string baseUrl)
+    {
+        string normalized = string.IsNullOrWhiteSpace(baseUrl)
+            ? DefaultBaseUrl
+            : baseUrl.Trim().TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(normalized)) normalized = DefaultBaseUrl;
+        BaseUrl = normalized;
+        _http.BaseAddress = new Uri(BaseUrl + "/");
     }
 
     public void SetTokens(AuthResult auth)
@@ -344,6 +357,150 @@ public sealed class ApiClient : IDisposable
         => "api/v1/chats/" + Uri.EscapeDataString(chatId)
             + "/messages/" + Uri.EscapeDataString(messageId) + "/pin";
 
+    /// <summary>Notifies the server that the local user is typing in a chat.</summary>
+    public Task SendTypingAsync(string chatId, CancellationToken ct = default)
+        => SendAuthenticatedEmptyAsync(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/typing",
+            null,
+            ct);
+
+    /// <summary>Reads server limits, falling back to safe defaults on older servers.</summary>
+    public async Task<LimitsConfig> GetLimitsAsync(CancellationToken ct = default)
+    {
+        LimitsConfig defaults = LimitsConfig.Default;
+        try
+        {
+            JsonElement root = await SendAuthenticatedAsync<JsonElement>(
+                HttpMethod.Get, "api/v1/client-config", null, ct);
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("limits", out JsonElement limits)
+                || limits.ValueKind != JsonValueKind.Object)
+            {
+                return defaults;
+            }
+
+            return new LimitsConfig(
+                ReadInt(limits, "maxTextLength", defaults.MaxTextLength),
+                ReadInt(limits, "maxVoiceSeconds", defaults.MaxVoiceSeconds),
+                ReadInt(limits, "maxCallMinutes", defaults.MaxCallMinutes),
+                ReadLong(limits, "maxFileBytes", defaults.MaxFileBytes));
+        }
+        catch (ApiException)
+        {
+            return defaults;
+        }
+    }
+
+    public Task<PollDto> CreatePollAsync(
+        string chatId, string question, IReadOnlyList<string> options, CancellationToken ct = default)
+        => SendAuthenticatedAsync<PollDto>(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/polls",
+            JsonContent.Create(new { question, options }, options: JsonOptions),
+            ct);
+
+    public Task<PollDto> VotePollAsync(
+        string chatId, string pollId, string optionId, CancellationToken ct = default)
+        => SendAuthenticatedAsync<PollDto>(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/polls/"
+                + Uri.EscapeDataString(pollId) + "/vote",
+            JsonContent.Create(new { optionId }, options: JsonOptions),
+            ct);
+
+    /// <summary>Streams a media file to the server and reports 0 to 100 percent.</summary>
+    public async Task UploadMediaAsync(
+        string chatId,
+        Stream data,
+        string fileName,
+        string mime,
+        string kind,
+        IProgress<double>? progress = null,
+        CancellationToken ct = default)
+    {
+        if (data is null) throw new ArgumentNullException(nameof(data));
+
+        using var form = new MultipartFormDataContent();
+        var progressStream = new ProgressReportingStream(data, progress);
+        using var file = new StreamContent(progressStream);
+        string requestedMime = string.IsNullOrWhiteSpace(mime) ? "application/octet-stream" : mime;
+        file.Headers.ContentType = MediaTypeHeaderValue.TryParse(requestedMime, out MediaTypeHeaderValue? parsed)
+            ? parsed
+            : new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(file, "file", string.IsNullOrWhiteSpace(fileName) ? "upload.bin" : fileName);
+        form.Add(new StringContent(string.IsNullOrWhiteSpace(kind) ? "file" : kind), "kind");
+
+        await SendAuthenticatedEmptyAsync(
+            HttpMethod.Post,
+            "api/v1/chats/" + Uri.EscapeDataString(chatId) + "/messages/media",
+            form,
+            ct);
+        progress?.Report(100);
+    }
+
+    /// <summary>Issues an admin token using the shared admin secret.</summary>
+    public async Task<string> IssueAdminTokenAsync(
+        string adminSecret, string? label, CancellationToken ct = default)
+    {
+        JsonElement response = await SendAdminAsync<JsonElement>(
+            HttpMethod.Post,
+            "api/v1/admin/tokens",
+            JsonContent.Create(new { label }, options: JsonOptions),
+            adminSecret,
+            ct);
+        string? token = ReadText(response, "token") ?? ReadText(response, "value");
+        if (string.IsNullOrWhiteSpace(token))
+            throw new ApiException("EMPTY_RESPONSE", "The admin endpoint did not return a token.");
+        return token!;
+    }
+
+    /// <summary>Reads recent server log lines using the shared admin secret.</summary>
+    public async Task<IReadOnlyList<string>> GetAdminLogsAsync(
+        string adminSecret, int lines = 200, CancellationToken ct = default)
+    {
+        int count = Math.Clamp(lines, 1, 10000);
+        JsonElement response = await SendAdminAsync<JsonElement>(
+            HttpMethod.Get,
+            "api/v1/admin/logs?lines=" + count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            null,
+            adminSecret,
+            ct);
+
+        JsonElement array = response;
+        if (response.ValueKind == JsonValueKind.Object
+            && response.TryGetProperty("lines", out JsonElement found)
+            && found.ValueKind == JsonValueKind.Array)
+        {
+            array = found;
+        }
+        var result = new List<string>();
+        if (array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement item in array.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                    result.Add(item.GetString() ?? string.Empty);
+            }
+        }
+        return result;
+    }
+
+    public Task UpdateLimitsAsync(
+        string adminSecret, LimitsConfig limits, CancellationToken ct = default)
+        => SendAdminEmptyAsync(
+            HttpMethod.Post,
+            "api/v1/admin/limits",
+            JsonContent.Create(new
+            {
+                maxTextLength = limits.MaxTextLength,
+                maxVoiceSeconds = limits.MaxVoiceSeconds,
+                maxCallMinutes = limits.MaxCallMinutes,
+                maxFileBytes = limits.MaxFileBytes
+            }, options: JsonOptions),
+            adminSecret,
+            ct);
+
     private async Task EnsureFreshTokenAsync(CancellationToken ct)
     {
         if (_refreshToken is null)
@@ -399,6 +556,47 @@ public sealed class ApiClient : IDisposable
         }
         using HttpResponseMessage response = await SendAsync(request, ct);
         await EnsureSuccessAsync(response, ct);
+    }
+
+    private async Task<T> SendAdminAsync<T>(
+        HttpMethod method, string path, HttpContent? content, string adminSecret, CancellationToken ct)
+    {
+        await EnsureFreshTokenAsync(ct);
+        using var request = new HttpRequestMessage(method, path) { Content = content };
+        request.Headers.TryAddWithoutValidation("X-Admin-Secret", adminSecret ?? string.Empty);
+        using HttpResponseMessage response = await SendAsync(request, ct);
+        await EnsureSuccessAsync(response, ct);
+        T? result = await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct);
+        return result ?? throw new ApiException("EMPTY_RESPONSE", "The server returned an empty response.");
+    }
+
+    private async Task SendAdminEmptyAsync(
+        HttpMethod method, string path, HttpContent? content, string adminSecret, CancellationToken ct)
+    {
+        await EnsureFreshTokenAsync(ct);
+        using var request = new HttpRequestMessage(method, path) { Content = content };
+        request.Headers.TryAddWithoutValidation("X-Admin-Secret", adminSecret ?? string.Empty);
+        using HttpResponseMessage response = await SendAsync(request, ct);
+        await EnsureSuccessAsync(response, ct);
+    }
+
+    private static int ReadInt(JsonElement element, string name, int fallback)
+        => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int parsed)
+            ? parsed
+            : fallback;
+
+    private static long ReadLong(JsonElement element, string name, long fallback)
+        => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long parsed)
+            ? parsed
+            : fallback;
+
+    private static string? ReadText(JsonElement element, string name)
+    {
+        if (element.ValueKind == JsonValueKind.String) return element.GetString();
+        if (element.ValueKind != JsonValueKind.Object) return null;
+        if (element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String)
+            return value.GetString();
+        return null;
     }
 
     private async Task<HttpResponseMessage> SendAsync(
@@ -461,6 +659,70 @@ public sealed class ApiClient : IDisposable
             ".jpg" or ".jpeg" => "image/jpeg",
             _ => "application/octet-stream"
         };
+    }
+
+    /// <summary>Counts bytes read by StreamContent so upload progress can be reported.</summary>
+    private sealed class ProgressReportingStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly IProgress<double>? _progress;
+        private readonly long _total;
+        private long _read;
+
+        public ProgressReportingStream(Stream inner, IProgress<double>? progress)
+        {
+            _inner = inner;
+            _progress = progress;
+            _total = inner.CanSeek ? Math.Max(0, inner.Length - inner.Position) : 0;
+        }
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => _inner.Length;
+        public override long Position { get => _inner.Position; set => _inner.Position = value; }
+        public override void Flush() => _inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            int read = _inner.Read(buffer, offset, count);
+            Report(read);
+            return read;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            int read = await _inner.ReadAsync(buffer, offset, count, ct);
+            Report(read);
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            int read = await _inner.ReadAsync(buffer, ct);
+            Report(read);
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _inner.Dispose();
+            base.Dispose(disposing);
+        }
+
+        private void Report(int count)
+        {
+            if (count <= 0 || _progress is null) return;
+            _read += count;
+            double value = _total > 0 ? Math.Min(100, _read * 100.0 / _total) : 0;
+            _progress.Report(value);
+        }
     }
 
     public void Dispose() => _http.Dispose();

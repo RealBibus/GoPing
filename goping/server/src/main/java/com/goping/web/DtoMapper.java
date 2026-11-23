@@ -67,7 +67,8 @@ public class DtoMapper {
                 enriched.lastMessageAt(),
                 enriched.peerOnline(),
                 enriched.peerLastSeenAt(),
-                enriched.peerTyping()
+                enriched.peerTyping(),
+                enriched.unreadCount()
         );
     }
 
@@ -108,12 +109,24 @@ public class DtoMapper {
 
     private String rewriteVoiceText(String text) {
         if (text == null) return null;
-        // payload: {"path":"/media/voice/...","durationSec":N}
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"").matcher(text);
-        if (!m.find()) return text;
-        String path = m.group(1);
-        String url = media.publicUrl(path);
-        if (url == null || url.equals(path)) return text;
-        return text.substring(0, m.start(1)) + url + text.substring(m.end(1));
+        // Payload: {"path":"/media/voice/...","durationSec":N}
+        // Forwarded payloads may use "url" instead of "path".
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"(path|url)\"\\s*:\\s*\"([^\"]+)\"")
+                .matcher(text);
+        StringBuilder result = new StringBuilder();
+        int cursor = 0;
+        while (m.find()) {
+            String path = m.group(2);
+            String url = path.startsWith("http://") || path.startsWith("https://")
+                    ? path : media.publicUrl(path);
+            if (url == null || url.equals(path)) {
+                continue;
+            }
+            result.append(text, cursor, m.start(2)).append(url);
+            cursor = m.end(2);
+        }
+        if (cursor == 0) return text;
+        return result.append(text, cursor, text.length()).toString();
     }
 }

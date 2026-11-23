@@ -1,5 +1,8 @@
 package com.goping.service;
 
+import com.goping.config.LiveLimits;
+import org.springframework.stereotype.Component;
+
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -7,6 +10,7 @@ import java.util.regex.Pattern;
 /**
  * Правила валидации профиля. Те же самые для GitHub-профиля и смены данных.
  */
+@Component
 public final class Validation {
 
     private static final Pattern USERNAME_PATTERN = Pattern.compile("^[a-z][a-z0-9_]{2,31}$");
@@ -18,7 +22,10 @@ public final class Validation {
             "undefined", "user", "username"
     );
 
-    private Validation() {
+    private final LiveLimits limits;
+
+    public Validation(LiveLimits limits) {
+        this.limits = limits;
     }
 
     /** Результат проверки поля: либо значение, либо текст ошибки. */
@@ -83,13 +90,18 @@ public final class Validation {
         return Checked.ok(nickname);
     }
 
-    public static Checked message(String raw) {
+    /** Message length follows the current runtime limit. */
+    public Checked message(String raw) {
+        return message(raw, limits.get().maxTextLength());
+    }
+
+    public static Checked message(String raw, int maxLength) {
         String text = raw == null ? "" : raw.strip();
         if (text.isEmpty()) {
             return Checked.fail(text, "сообщение не может быть пустым");
         }
-        if (text.codePointCount(0, text.length()) > 4000) {
-            return Checked.fail(text, "сообщение должно быть не длиннее 4000 символов");
+        if (text.codePointCount(0, text.length()) > maxLength) {
+            return Checked.fail(text, "сообщение должно быть не длиннее " + maxLength + " символов");
         }
         for (int i = 0; i < text.length(); ) {
             int codePoint = text.codePointAt(i);

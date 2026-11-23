@@ -91,11 +91,13 @@ Nickname is at most 50 characters and not unique. Username matches `^[a-z][a-z0-
 
 ## 3. Chats and messages
 
-ChatDto fields: `id`, `kind` (`direct` or `favorites`), `title`, `username`, `avatarUrl`, `createdAt`, `peerUserId`, `lastMessageText`, `lastMessageAt`, `peerOnline`, `peerLastSeenAt`, `peerTyping`.
+ChatDto fields: `id`, `kind` (`direct` or `favorites`), `title`, `username`, `avatarUrl`, `createdAt`, `peerUserId`, `lastMessageText`, `lastMessageAt`, `peerOnline`, `peerLastSeenAt`, `peerTyping`, `unreadCount` (integer).
 
-MessageDto fields: `id`, `chatId`, `sender` with `id`, `username`, `nickname`, `avatarUrl`, `text`, `algorithm`, `kind` (`text`, `voice` or `call`), `createdAt`, `replyTo` or null, `status` (`sent` or `read`), `pinScope` (`me`, `chat` or null), `editedAt`, `forwardedFromSenderNickname`, `forwardedFromText`.
+MessageDto fields: `id`, `chatId`, `sender` with `id`, `username`, `nickname`, `avatarUrl`, `text`, `algorithm`, `kind` (`text`, `voice`, `call`, `photo`, `video`, `file` or `poll`), `createdAt`, `replyTo` or null, `status` (`sent` or `read`), `pinScope` (`me`, `chat` or null), `editedAt`, `forwardedFromSenderNickname`, `forwardedFromText`.
 
 The `status` field is relative to the viewer. `read` appears on your own messages after the peer reads them. `nextCursor` is currently always null.
+
+`unreadCount` counts messages from other participants newer than the viewer's stored read timestamp. Own messages and messages hidden by the viewer are excluded. `POST /api/v1/chats/{chatId}/read` updates that timestamp, so the next `GET /api/v1/chats` reports `unreadCount: 0` for the chat. The client also keeps a live session count from `message.created` events and shows the larger of the server count and the local count.
 
 | Method | Path | Body or parameters | Response |
 |---|---|---|---|
@@ -107,28 +109,41 @@ The `status` field is relative to the viewer. `read` appears on your own message
 | GET | `/api/v1/chats/{chatId}/pins` | none | `{"items": [MessageDto], ...}`, all visible pins |
 | POST | `/api/v1/chats/{chatId}/messages` | `{"text", "replyToId"?}` | 201 MessageDto |
 | POST | `/api/v1/chats/{chatId}/messages/voice` | multipart, section 5 | 201 MessageDto |
+| POST | `/api/v1/chats/{chatId}/messages/media` | multipart `file`, `kind` (`photo`, `video` or `file`) | 201 MessageDto, encrypted payload with `url`, `fileName`, `sizeBytes`, `mime`, WS `message.created` |
+| POST | `/api/v1/chats/{chatId}/polls` | `{"question", "options": [string]}` | 201 PollDto, WS `message.created` and `poll.updated` |
+| GET | `/api/v1/chats/{chatId}/polls/{pollId}` | none | 200 PollDto |
+| POST | `/api/v1/chats/{chatId}/polls/{pollId}/vote` | `{"optionId"}` | 200 PollDto, WS `poll.updated` |
 | PATCH | `/api/v1/chats/{chatId}/messages/{messageId}` | `{"text"}` | 200 MessageDto, own text messages only, sets `editedAt` |
 | POST | `/api/v1/chats/{chatId}/messages/forward` | `{"fromChatId", "messageId"}` | 201 MessageDto in the target chat |
 | DELETE | `/api/v1/chats/{chatId}/messages/{messageId}` | `{"forEveryone": bool}`, default false | 204 |
 | POST | `/api/v1/chats/{chatId}/messages/{messageId}/pin` | `{"scope": "me" \| "chat"}` | 204 |
 | DELETE | `/api/v1/chats/{chatId}/messages/{messageId}/pin` | `{"scope": "me" \| "chat"}` | 204 |
 
-Text length is 1 to 4000 code points. Replies must be in the same chat. `GET /chats` also sends a presence heartbeat and creates a `Favorites` self chat for notes and forwarding to yourself. With `forEveryone=true`, delete removes the message for everyone. Deleting other people's messages requires `ALLOW_DELETE_OTHERS_MESSAGES=true`, otherwise the server returns 403 `DELETE_OTHERS_DISABLED`. With `false`, the message is hidden only for you. Forwarding decrypts the original and encrypts it again for the target chat. Damaged messages return 400 `MESSAGE_DAMAGED`. Forwarded messages include `forwardedFromSenderNickname` and `forwardedFromText` with up to 300 characters. Pin scope `me` is visible only to you, `chat` to everyone in the chat. Calls are not a separate REST resource. The server writes `kind:"call"` messages with `text` set to `{"status":"ended"|"missed"|"declined"|"cancelled","durationSec":N}` and delivers them as normal `message.created` events.
+PollDto fields: `id`, `question`, `options` with `id`, `text`, `votes`, `totalVotes`, `closed`, `votedOptionIdSet`, `myVoteOptionId`. A question is 1 to 500 code points and a poll has 2 to 10 options of 1 to 200 code points. One vote per user, a later vote replaces the earlier one. A poll is stored as an encrypted message with `kind:"poll"`.
+
+Text length is 1 to the current `maxTextLength` limit, 4000 by default. The limit is configurable and changes through the admin API. Replies must be in the same chat. `GET /chats` also sends a presence heartbeat and creates a `Favorites` self chat for notes and forwarding to yourself. With `forEveryone=true`, delete removes the message for everyone. Deleting other people's messages requires `ALLOW_DELETE_OTHERS_MESSAGES=true`, otherwise the server returns 403 `DELETE_OTHERS_DISABLED`. With `false`, the message is hidden only for you. Forwarding decrypts the original and encrypts it again for the target chat. Damaged messages return 400 `MESSAGE_DAMAGED`. Forwarded messages include `forwardedFromSenderNickname` and `forwardedFromText` with up to 300 characters. `forwardedFromText` is a human sentence and never raw JSON for voice, call, poll and media messages: `Voice message`, `Missed call` or `Voice call`, `Poll: <question>` or `Poll`, `Photo`, `Video`, `File`. Pin scope `me` is visible only to you, `chat` to everyone in the chat. Calls are not a separate REST resource. The server writes `kind:"call"` messages with `text` set to `{"status":"ended"|"missed"|"declined"|"cancelled","durationSec":N}` and delivers them as normal `message.created` events.
 
 ## 4. Presence, config and RTC
 
 | Method | Path | Response |
 |---|---|---|
 | POST | `/api/v1/presence/heartbeat` | 204. Online means an active WebSocket or a heartbeat newer than 25 seconds. |
-| GET | `/api/v1/client-config` | `{"allowDeleteOthersMessages": bool}` |
+| GET | `/api/v1/client-config` | `{"allowDeleteOthersMessages": bool, "limits": Limits}` |
 | GET | `/api/v1/rtc/config` | `{"iceServers": [...]}`. The TURN entry appears only when `TURN_URLS` is set. |
 | GET | `/healthz` | Public, no prefix. `{"status":"ok"}` |
 | GET | `/readyz` | Public. `{"status":"ready"}` or 503 `DB_UNAVAILABLE` |
+
+Limits fields are `maxTextLength`, `maxVoiceSeconds`, `maxCallMinutes` and `maxFileBytes`. Defaults are 4000, 300, 0 (unlimited calls) and 52428800 bytes.
+
+```json
+{ "allowDeleteOthersMessages": true, "limits": { "maxTextLength": 4000, "maxVoiceSeconds": 300, "maxCallMinutes": 0, "maxFileBytes": 52428800 } }
+```
 
 Public media paths are served from `UPLOAD_DIR` with `Cache-Control: public, max-age=86400`:
 
 - `/media/avatars/<uuid>.<jpg|png|gif>`
 - `/media/voice/<uuid>.<ext>`
+- `/media/media/<yyyy>/<mm>/<uuid>.<ext>` for chat media
 
 `avatarUrl` in responses is absolute, using `PUBLIC_BASE_URL`. GitHub users may have a GitHub avatar URL.
 
@@ -137,21 +152,21 @@ Public media paths are served from `UPLOAD_DIR` with `Cache-Control: public, max
 POST `/api/v1/chats/{chatId}/messages/voice` uses `multipart/form-data` with these fields:
 
 - `audio`: the file
-- `durationSec`: optional integer from 0 to 3600
+- `durationSec`: optional integer, capped at `maxVoiceSeconds` (300 by default)
 - `replyToId`: optional UUID
 
-The file must be non-empty and at most 10 MiB. Allowed formats are webm, ogg, mp3, wav, m4a and mp4. mp4 and m4a are stored as `.m4a`. Other formats return 415. Files are saved to `UPLOAD_DIR/voice/<uuid>.<ext>`. The stored message has `kind:"voice"` and encrypted `text` equal to `{"path":"/media/voice/<uuid>.<ext>","durationSec":N}`. API and WebSocket responses replace `path` with an absolute URL built from `PUBLIC_BASE_URL`.
+The file must be non-empty and at most the current `maxFileBytes` limit, 52428800 bytes by default. Allowed formats are webm, ogg, mp3, wav, m4a and mp4. mp4 and m4a are stored as `.m4a`. Other formats return 415. Files are saved to `UPLOAD_DIR/voice/<uuid>.<ext>`. The stored message has `kind:"voice"` and encrypted `text` equal to `{"path":"/media/voice/<uuid>.<ext>","durationSec":N}`. API and WebSocket responses replace `path` with an absolute URL built from `PUBLIC_BASE_URL`.
 
 ## 6. WebSocket `/api/v1/ws`
 
-Connect to `ws://host:8080/api/v1/ws?token=<accessToken>`. The JWT is checked during the handshake, there is no login frame. On connect the server sends a presence heartbeat, broadcasts `presence` to peers and delivers pending call invites. When the last socket closes, the user goes offline and `presence` is broadcast. Multiple sessions per user are supported.
+Connect to `ws://host:8080/api/v1/ws?token=<accessToken>`. The JWT is checked during the handshake, there is no login frame. On connect the server sends a `limits` frame and a presence heartbeat, broadcasts `presence` to peers and delivers pending call invites. When the last socket closes, the user goes offline and `presence` is broadcast. Multiple sessions per user are supported.
 
 Client to server frames:
 
 | `type` | Fields | Effect |
 |---|---|---|
 | `ping` | none | Returns `pong` |
-| `typing` | `chatId` | Broadcasts `typing` |
+| `typing` | `chatId` | Relayed to chat members as `typing`, except the sender |
 | `read` | `chatId` | Marks as read, broadcasts `messages.read` |
 | `call.invite` | `chatId`, `callId` (UUID from client) | Creates the call in memory, sends `call.invite` to the peer |
 | `call.accept` | `callId` | Peer receives `call.accepted` |
@@ -160,19 +175,21 @@ Client to server frames:
 | `call.signal` | `callId`, `kind` (`offer`, `answer`, `ice`), `data` | Relayed to the peer as is |
 | `call.rejoin` | `callId` | Peer receives `call.peer-rejoined` so ICE restart can run |
 
-Unknown types are ignored.
+`typing` frames are sent by the client and relayed by the server. The REST `POST /chats/{chatId}/typing` path produces the same event. Unknown types are ignored.
 
 Server to client frames:
 
 | `type` | Fields | Recipients |
 |---|---|---|
 | `pong` | none | Requester |
+| `limits` | `limits` with `maxTextLength`, `maxVoiceSeconds`, `maxCallMinutes`, `maxFileBytes` | Each client on connect, all clients after an admin limits change |
 | `message.created` | `chatId`, `message` | Chat members, plus `chat.updated` |
 | `message.edited` | `chatId`, `message` | Chat members, plus `chat.updated` |
 | `message.deleted` | `chatId`, `messageId`, `forEveryone` | Whole chat if forEveryone, otherwise only the deleter |
 | `message.pinned` | `chatId`, `messageId`, `scope`, `actorId`, `pinned` | Actor only for scope me, otherwise the chat |
 | `chat.updated` | `chat` | Each chat member, also on chat creation |
 | `typing` | `chatId`, `userId` | Chat members except the sender |
+| `poll.updated` | `chatId`, `poll` (PollDto) | Chat members, on poll create and vote |
 | `messages.read` | `chatId`, `readerId`, `readAt`, `upToMessageId?` | Chat members |
 | `presence` | `userId`, `online`, `lastSeenAt?` | All peers of the user |
 | `call.invite` | `callId`, `chatId`, `fromUserId`, `toUserId` | Callee, redelivered on reconnect for calls up to 10 minutes old |
@@ -200,6 +217,12 @@ Send header `X-Admin-Secret` with the value of `ADMIN_SECRET`. This is not a Bea
 | POST | `/api/v1/admin/tokens` | `{"label"?}` up to 80 characters | 201 `{"token": AdminTokenDto, "value": "GOPING-..."}`, raw value shown once |
 | GET | `/api/v1/admin/tokens` | none | `{"items": [AdminTokenDto]}` |
 | DELETE | `/api/v1/admin/tokens/{id}` | none | 204, revokes the token |
+| GET | `/api/v1/admin/logs?lines=200` | none | `{"lines": [string]}`, recent in-memory log lines, capped at 1000 |
+| POST | `/api/v1/admin/limits` | optional `{"maxTextLength"?, "maxVoiceSeconds"?, "maxCallMinutes"?, "maxFileBytes"?}` | 200 Limits, null fields keep their current values, sends a `limits` frame to all clients |
+
+```json
+{ "lines": ["2026-05-23T12:00:00Z INFO  c.g.GopingApplication - Started GopingApplication"] }
+```
 
 AdminTokenDto fields: `id`, `prefix` (`GOPING-` plus the first 4 characters), `label`, `userId` (null before activation), `createdAt`, `activatedAt`, `lastUsedAt`, `revokedAt`.
 
@@ -225,15 +248,19 @@ Environment variables can also be set in a `.env` file in the working directory.
 | Variable | Default | Purpose |
 |---|---|---|
 | `HTTP_PORT` | `8080` | HTTP port |
-| `DATABASE_PATH` | `./data/goping.db` | SQLite file, migrations V1 to V8 |
+| `DATABASE_PATH` | `./data/goping.db` | SQLite file, migrations V1 to V9 |
 | `JWT_SECRET` | none | Required, at least 32 characters |
 | `JWT_ISSUER` | `goping` | JWT issuer |
 | `ACCESS_TOKEN_TTL` | `PT15M` | Access token lifetime |
 | `REFRESH_TOKEN_TTL` | `P30D` | Must be longer than access lifetime |
-| `UPLOAD_DIR` | `./data/uploads` | Root for `avatars/` and `voice/` |
+| `UPLOAD_DIR` | `./data/uploads` | Root for `avatars/`, `voice/` and `media/` |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | Prefix for absolute media URLs |
 | `MAX_AVATAR_BYTES` | `5242880` | Avatar limit, 5 MiB |
-| `MAX_UPLOAD_BYTES` | `10485760` | Multipart limit, voice up to 10 MiB |
+| `MAX_FILE_BYTES` | `52428800` | Multipart limit and max size for voice and media uploads |
+| `MAX_TEXT_LENGTH` | `4000` | Max message length in code points |
+| `MAX_VOICE_SECONDS` | `300` | Max voice message duration |
+| `MAX_CALL_MINUTES` | `0` | Max call length, 0 means unlimited |
+| `LOG_LINES` | `400` | In-memory log lines kept for the admin logs API |
 | `AUTH_RATE_LIMIT` | `30` | Auth requests per minute per IP |
 | `AVAILABILITY_RATE_LIMIT` | `120` | Username checks per minute per IP |
 | `CORS_ORIGINS` | `*` | Allowed origins |
@@ -249,7 +276,9 @@ Environment variables can also be set in a `.env` file in the working directory.
 | `TURN_USERNAME` | `goping` | coturn username |
 | `TURN_CREDENTIAL` | `gopingturn` | coturn credential |
 
-The WPF client uses `GOPING_API_URL` to select the server, default `http://localhost:8080`.
+The four limit values are runtime settings. `POST /api/v1/admin/limits` changes them without a restart and broadcasts a `limits` frame.
+
+The WPF client uses `GOPING_API_URL` to select the server. With no value set, `ApiClient` falls back to `http://26.68.224.240:8080`.
 
 ### Fork checklist
 
@@ -258,3 +287,13 @@ The WPF client uses `GOPING_API_URL` to select the server, default `http://local
 3. Set up coturn and `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL` if calls leave the local network.
 4. Create a GitHub OAuth App and set `GITHUB_CALLBACK_URL` if you want GitHub login.
 5. In the client, change the branding, the update repository in `UpdateService.DefaultGitHubRepo` and in `make-release.ps1`, and the default `GOPING_API_URL`. The in-app console uses `AppLog` and `HostControlService` to start the server, coturn in WSL and Radmin VPN.
+
+## 10. Release assets
+
+| Asset | Use |
+|---|---|
+| `GoPing-win-x64.zip` | In-app update payload. The updater prefers this asset and extracts `GoPing.exe`. |
+| `GoPing-win-x64.zip.sha256` | Checksum for the zip, verified before apply when present. |
+| `GoPing-Setup-v1.0.2-win-x64.exe` | Manual install. Also used by the in-app updater when a release has no zip. |
+
+The update source is hardcoded to `https://github.com/RealBibus/GoPing`. An installer update runs with `/VERYSILENT /NORESTART /NOCANCEL /CLOSEAPPLICATIONS`, then the client restarts. After a successful update the success notice and release notes are shown again.

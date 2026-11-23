@@ -1,11 +1,15 @@
 package com.goping.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.goping.config.DeletePolicy;
+import com.goping.config.LiveLimits;
 import com.goping.crypto.MessageCipher;
 import com.goping.domain.Message;
 import com.goping.domain.User;
 import com.goping.error.ApiException;
 import com.goping.error.ValidationException;
+import com.goping.media.MediaStore;
 import com.goping.repository.ChatRepository;
 import com.goping.repository.MessageRepository;
 import com.goping.repository.UserRepository;
@@ -15,11 +19,15 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -32,23 +40,31 @@ public class MessageService {
 
     private static final Logger log = LoggerFactory.getLogger(MessageService.class);
     private static final String DAMAGED_TEXT = "[сообщение повреждено: не удалось проверить подпись]";
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Set<String> MEDIA_KINDS = Set.of("photo", "video", "file");
 
     private final ChatRepository chats;
     private final MessageRepository messages;
     private final UserRepository users;
     private final MessageCipher cipher;
     private final DeletePolicy deletePolicy;
+    private final Validation validation;
+    private final LiveLimits limits;
 
     public MessageService(ChatRepository chats,
                           MessageRepository messages,
                           UserRepository users,
                           MessageCipher cipher,
-                          DeletePolicy deletePolicy) {
+                          DeletePolicy deletePolicy,
+                          Validation validation,
+                          LiveLimits limits) {
         this.chats = chats;
         this.messages = messages;
         this.users = users;
         this.cipher = cipher;
         this.deletePolicy = deletePolicy;
+        this.validation = validation;
+        this.limits = limits;
     }
 
     public Message send(UUID userId, UUID chatId, String rawText, String rawReplyToId) {
@@ -56,7 +72,7 @@ public class MessageService {
             throw ApiException.notFound();
         }
 
-        Validation.Checked checked = Validation.message(rawText);
+        Validation.Checked checked = validation.message(rawText);
         if (checked.hasError()) {
             throw new ValidationException(Map.of("text", checked.error()));
         }
@@ -113,10 +129,36 @@ public class MessageService {
                 throw new ValidationException(Map.of("replyToId", "ответ только внутри этого чата"));
             }
         }
-        int safeDuration = Math.max(0, Math.min(durationSec, 3600));
+        int safeDuration = Math.max(0, Math.min(durationSec, limits.get().maxVoiceSeconds()));
         String safePath = voicePath.replace("\\", "/");
         String payload = "{\"path\":\"" + safePath.replace("\"", "") + "\",\"durationSec\":" + safeDuration + "}";
         return storeMessage(userId, chatId, payload, "voice", createdNow(), replyToId);
+    }
+
+    /** Creates an encrypted media message from a file already stored by MediaStore. */
+    public Message sendMedia(UUID userId, UUID chatId, String kind, MediaStore.StoredMedia media) {
+        if (!chats.isMember(chatId, userId)) {
+            throw ApiException.notFound();
+        }
+        String safeKind = kind == null ? "" : kind.toLowerCase(Locale.ROOT);
+        if (!MEDIA_KINDS.contains(safeKind)) {
+            throw new ValidationException(Map.of("kind", "kind must be photo, video or file"));
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("url", media.path());
+        payload.put("fileName", media.fileName());
+        payload.put("sizeBytes", media.sizeBytes());
+        payload.put("mime", media.mime());
+        try {
+            return storeMessage(userId, chatId, JSON.writeValueAsString(payload), safeKind, createdNow(), null);
+        } catch (IOException e) {
+            throw new IllegalStateException("failed to build media payload", e);
+        }
+    }
+
+    /** Creates an encrypted payload message such as a poll card. */
+    public Message storePayloadMessage(UUID userId, UUID chatId, String payload, String kind) {
+        return storeMessage(userId, chatId, payload, kind, createdNow(), null);
     }
 
     @Transactional
@@ -124,7 +166,7 @@ public class MessageService {
         if (!chats.isMember(chatId, userId)) {
             throw ApiException.notFound();
         }
-        Validation.Checked checked = Validation.message(rawText);
+        Validation.Checked checked = validation.message(rawText);
         if (checked.hasError()) {
             throw new ValidationException(Map.of("text", checked.error()));
         }
@@ -168,14 +210,51 @@ public class MessageService {
         }
 
         String forwardedNick = stored.senderNickname() == null ? "" : stored.senderNickname();
-        String preview = originalText;
-        if ("voice".equals(stored.kind())) {
-            preview = "Voice message";
-        } else if (preview.length() > 300) {
+        String preview = forwardPreview(stored.kind(), originalText);
+        if (preview.length() > 300) {
             preview = preview.substring(0, 299) + "…";
         }
 
         return storeMessage(userId, targetChatId, originalText, stored.kind(), createdNow(), null, forwardedNick, preview);
+    }
+
+    /** Forward previews are human sentences, never raw JSON payloads. */
+    private static String forwardPreview(String kind, String originalText) {
+        String safeKind = kind == null ? "" : kind;
+        return switch (safeKind) {
+            case "voice" -> "Voice message";
+            case "photo" -> "Photo";
+            case "video" -> "Video";
+            case "file" -> "File";
+            case "call" -> callPreview(originalText);
+            case "poll" -> pollPreview(originalText);
+            default -> originalText;
+        };
+    }
+
+    private static String callPreview(String originalText) {
+        String status = "";
+        try {
+            JsonNode node = JSON.readTree(originalText);
+            status = node.path("status").asText("");
+        } catch (Exception ignored) {
+            // Fall back to a voice call when the stored payload cannot be parsed.
+        }
+        return switch (status) {
+            case "missed", "declined", "cancelled" -> "Missed call";
+            default -> "Voice call";
+        };
+    }
+
+    private static String pollPreview(String originalText) {
+        String question = "";
+        try {
+            JsonNode node = JSON.readTree(originalText);
+            question = node.path("question").asText("").strip();
+        } catch (Exception ignored) {
+            // Fall back to a generic label when the stored payload cannot be parsed.
+        }
+        return question.isEmpty() ? "Poll" : "Poll: " + question;
     }
 
     private Message storeMessage(UUID userId, UUID chatId, String text, String kind, Instant createdAt, UUID replyToId) {
@@ -285,6 +364,11 @@ public class MessageService {
             messages.unpin(userId, messageId, scope);
         }
         return new PinResult(messageId, scope, userId, pinned);
+    }
+
+    /** Unread messages for chat list badges. */
+    public int unreadCount(UUID chatId, UUID viewerId) {
+        return messages.unreadCount(chatId, viewerId);
     }
 
     public ReadResult markRead(UUID userId, UUID chatId) {

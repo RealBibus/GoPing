@@ -15,7 +15,7 @@ twice (zip inside a self-contained .NET host).
 
 Prerequisites:
 - .NET SDK 10 (net10.0-windows target)
-- Inno Setup 6 — https://jrsoftware.org/isdl.php
+- Inno Setup 6: https://jrsoftware.org/isdl.php
 
 Usage:
   powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1
@@ -50,7 +50,7 @@ if (-not (Test-Path $project)) {
 
 [xml]$csprojXml = Get-Content $project
 $version = $csprojXml.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-if (-not $version) { $version = '1.0.0' }
+if (-not $version) { $version = '1.0.2' }
 
 Write-Host "==> Publishing GoPing Messenger v$version" -ForegroundColor Cyan
 Write-Host "    Project: $project"

@@ -11,6 +11,18 @@ GoPing is a small messenger for you and your friends. The Windows client talks t
 - Messages encrypted at rest with GOST R 34.12-2015 (Kuznyechik) in CTR mode plus HMAC-SHA256.
 - Updates from GitHub Releases, with an optional beta channel.
 
+### 1.0.2
+
+- Reliable in-app updater with zip and installer support, sha256 checks and release notes after update.
+- Rounded design and native Windows notifications.
+- Voice playback speed up to x4 and a listened marker.
+- Polls in chats.
+- Media uploads with compression and a Save as popup.
+- Chat list with unread counts and date separators.
+- Server list for switching between saved servers.
+- Admin panel for tokens, live limits and recent server logs.
+- Cache clearing from settings.
+
 ## Repository layout
 
 ```
@@ -40,7 +52,7 @@ Set `JWT_SECRET` (at least 32 characters) and `ADMIN_SECRET` in `.env` first. Th
 dotnet run --project goping/GoPing.Messenger
 ```
 
-The client uses `http://localhost:8080` by default. Set `GOPING_API_URL` to use another server, for example a Radmin VPN address.
+Set `GOPING_API_URL` to use a server, for example a Radmin VPN address. Without it the client falls back to `http://26.68.224.240:8080`.
 
 ### Sign in
 
@@ -55,13 +67,13 @@ Friends connect over LAN or VPN, each with their own token.
 powershell -ExecutionPolicy Bypass -File goping\installer\build-installer.ps1
 ```
 
-This produces `goping/installer/output/GoPing-Setup-v1.0.0-win-x64.exe` (about 54 MB). It is a native Inno Setup installer with custom wizard graphics. It installs per user to `%LOCALAPPDATA%\Programs\GoPing` without admin rights, creates Start menu and optional desktop shortcuts, and adds an uninstall entry. Chats and settings in `%LOCALAPPDATA%\GoPing` are kept on uninstall.
+This produces `goping/installer/output/GoPing-Setup-v1.0.2-win-x64.exe` (about 54 MB). It is a native Inno Setup installer with custom wizard graphics. It installs per user to `%LOCALAPPDATA%\Programs\GoPing` without admin rights, creates Start menu and optional desktop shortcuts, and adds an uninstall entry. Chats and settings in `%LOCALAPPDATA%\GoPing` are kept on uninstall.
 
 Silent runs:
 
 ```powershell
-GoPing-Setup.exe /VERYSILENT /DIR="C:\Path"
-GoPing-Setup.exe /VERYSILENT /UNINSTALL
+GoPing-Setup-v1.0.2-win-x64.exe /VERYSILENT /DIR="C:\Path"
+"%LOCALAPPDATA%\Programs\GoPing\unins000.exe" /VERYSILENT /NORESTART
 ```
 
 ## Updates
@@ -69,10 +81,10 @@ GoPing-Setup.exe /VERYSILENT /UNINSTALL
 The update source is hardcoded to `https://github.com/RealBibus/GoPing`.
 
 1. Increase `<Version>` in `goping/GoPing.Messenger/GoPing.Messenger.csproj`.
-2. Run `powershell -ExecutionPolicy Bypass -File goping\installer\make-release.ps1`. It creates `GoPing-win-x64.zip` and a `.sha256` file.
-3. Create a GitHub release tagged `v<version>` and attach both files.
+2. Run `powershell -ExecutionPolicy Bypass -File goping\installer\make-release.ps1`. It creates `GoPing-win-x64.zip` and `GoPing-win-x64.zip.sha256`.
+3. Create a GitHub release tagged `v<version>` and attach both files. Also attach `GoPing-Setup-<version>-win-x64.exe` for manual installs, for example `GoPing-Setup-v1.0.2-win-x64.exe`. The updater uses the zip first and falls back to the installer exe.
 
-In the client, open Settings, then Updates. New versions download in the background. The card shows release notes and an Install button. The beta checkbox includes pre-releases.
+In the client, open Settings, then Updates. New versions download in the background. The card shows release notes and an Install button. The beta checkbox includes pre-releases. After an update the success notice and release notes are shown again.
 
 ## Forking
 
