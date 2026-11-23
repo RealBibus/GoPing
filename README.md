@@ -1,134 +1,103 @@
 # GoPing
 
-**Личный мессенджер для своих.** GoPing — это мой клиент для меня и моих друзей:
-звонки, демонстрация экрана, голосовые, чаты — всё на своём сервере, без чужих облаков.
+GoPing is a small messenger for you and your friends. The Windows client talks to a server you run yourself. Messages are stored encrypted on that server. Sign in with GitHub or with a token issued by the server admin.
 
-> **Хочешь такой же для своей компании?** Форкай репозиторий и переделывай под себя:
-> меняй название, оформление, сервер и настройки — и получишь собственный мессенджер
-> для своих друзей. API полностью документирован в [docs/API.md](docs/API.md),
-> клиент не привязан к WPF — подойдёт любой стек. Ниже есть [гайд для форков](#форки-сделай-свой-мессенджер).
+## Features
 
-## Возможности
+- 1:1 audio and video calls over P2P WebRTC. The server only relays signaling.
+- Screen sharing with a custom source picker, Windows Graphics Capture (WGC) and a GDI fallback.
+- Voice messages with a live recording waveform and playback progress.
+- Chat tools: edit, forward, reply, pins, delete for self or everyone, search.
+- Messages encrypted at rest with GOST R 34.12-2015 (Kuznyechik) in CTR mode plus HMAC-SHA256.
+- Updates from GitHub Releases, with an optional beta channel.
 
-- **1:1 звонки** — аудио/видео через P2P WebRTC, сервер только сигнализирует и медиа не трогает.
-  Полноэкранный интерфейс, кольцо говорящего, регулировка громкости 0–400%, deafen,
-  длительность звонка, карточки звонков в чате, тихий реконнект.
-- **Демонстрация экрана** — выбор окна/экрана, захват WGC с fallback на GDI, 30–60 FPS,
-  пресеты качества.
-- **Голосовые сообщения** — удерживай микрофон, говори, отпускай — отправляется само.
-  Живая полоска частот голоса во время записи, волна и прогресс в баббле.
-- **Чаты** — редактирование и пересылка сообщений, ответы, пины (для себя / для всех),
-  удаление для себя / для всех, избранное, поиск людей, эмодзи.
-- **Шифрование** — сообщения хранятся по ГОСТ Р 34.12-2015 «Кузнечик» (CTR) + HMAC-SHA256.
-- **Вход** — через GitHub в один клик или по серверному токену `GOPING-…` от админа.
-  Никаких паролей и регистрации.
-- **Автообновление** — клиент сам проверяет GitHub Releases, скачивает, проверяет
-  контрольную сумму, устанавливает и перезапускается.
-
-## Структура репозитория
+## Repository layout
 
 ```
-├── goping/
-│   ├── server/            Java 21 + Spring Boot 3.3 + SQLite (REST + WebSocket)
-│   ├── GoPing.Messenger/  WPF-клиент для Windows (.NET 10, WebView2)
-│   └── installer/         скрипты публикации, Inno Setup, подготовка релизов
-├── docs/
-│   └── API.md             полное описание REST + WS API для форков и своих клиентов
-└── CHANGELOG.md
+goping/
+  server/              Java 21, Spring Boot, SQLite (REST and WebSocket)
+  GoPing.Messenger/    Windows WPF client (.NET 10, WebView2)
+  installer/           Inno Setup installer and release scripts
+docs/API.md            API reference
+CHANGELOG.md           Change history
+LICENSE                MIT license
 ```
 
-## Быстрый старт
+## Quick start
 
-### Сервер
+### Server
 
 ```powershell
 cd goping/server
-copy .env.example .env    # задай JWT_SECRET (≥32 символов) и ADMIN_SECRET
+copy .env.example .env
 .\mvnw.cmd spring-boot:run
 ```
 
-Сервер поднимется на `http://localhost:8080`, база создастся в `./data/goping.db`.
-Проверка: `curl http://localhost:8080/healthz` → `{"status":"ok"}`.
+Set `JWT_SECRET` (at least 32 characters) and `ADMIN_SECRET` in `.env` first. The server listens on `http://localhost:8080` and creates its database in `./data/goping.db`. Check it with `curl http://localhost:8080/healthz`.
 
-### Клиент
+### Client
 
 ```powershell
 dotnet run --project goping/GoPing.Messenger
 ```
 
-По умолчанию клиент ходит на `http://localhost:8080`; другой сервер — через
-переменную окружения `GOPING_API_URL` (например, Radmin-IP твоей машины).
+The client uses `http://localhost:8080` by default. Set `GOPING_API_URL` to use another server, for example a Radmin VPN address.
 
-### Вход
+### Sign in
 
-1. Выдай токен: `POST /api/v1/admin/tokens` с заголовком `X-Admin-Secret`
-   (значение из `.env`). Ответ содержит `GOPING-…` — показывается один раз.
-2. В клиенте вставь токен или войди через GitHub (если настроены
-   `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`).
-3. Первый вход по токену создаёт пользователя; повторные — входят в того же.
+1. Ask the admin for a `GOPING-...` token, or configure GitHub OAuth with `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+2. Paste the token into the client or use the GitHub button. The first token login creates the user, later logins open the same account.
 
-Друзья подключаются к твоему серверу по сети (LAN, Radmin VPN и т.п.) —
-каждому свой токен.
+Friends connect over LAN or VPN, each with their own token.
 
-## Релизы и обновления
-
-Клиент обновляется сам через **GitHub Releases**:
-
-1. Подними версию в `goping/GoPing.Messenger/GoPing.Messenger.csproj` (`<Version>`).
-2. Собери релиз:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File goping\installer\make-release.ps1
-   ```
-   Получишь `goping/installer/output/GoPing-win-x64.zip` + `.sha256`.
-3. Создай на GitHub релиз с тегом `v{версия}` и прикрепи оба файла.
-4. Репозиторий `RealBibus/GoPing` (**https://github.com/RealBibus/GoPing**) уже
-   зашит в клиенте — ничего настраивать не нужно. В клиенте: **Settings → Updates**
-   → **Check for updates**. Найденная версия скачивается автоматически; в карточке
-   показываются **список изменений** из релиза и кнопка **Install update**, которая
-   применяет обновление и перезапускает клиент. Галочка **Receive beta updates**
-   включает бета-канал (pre-release сборки). При старте проверка идёт тихо —
-   если есть новая версия, появится кнопка обновления слева внизу.
-
-## Форки: сделай свой мессенджер
-
-GoPing сделан так, чтобы его можно было забрать и переделать под свою компанию:
-
-1. **Форкни репозиторий.**
-2. **Сервер** — задай свои секреты в `.env`: `JWT_SECRET`, `ADMIN_SECRET`,
-   `MESSAGE_KEY` (ключ шифрования сообщений; если не задан — берётся из
-   `JWT_SECRET`, и смена секрета сломает старые сообщения). Для звонков через
-   интернет подними свой coturn и пропиши `TURN_URLS` / `TURN_USERNAME` /
-   `TURN_CREDENTIAL`. Все переменные — в [docs/API.md](docs/API.md#конфигурация-сервера).
-3. **Клиент** — меняй что хочешь: название (`AssemblyName` в csproj), иконки,
-   цвета (`App.xaml`), тексты. Логика отделена от UI: `Services/ApiClient.cs`
-   (REST), `Services/RealtimeClient.cs` (WS), `Services/CallService.cs` (звонки).
-4. **Свой клиент с нуля** — контракт сервера полный и стабильный:
-   [docs/API.md](docs/API.md). Хоть браузер, хоть мобилка — серверу всё равно.
-5. **Обновления** — в `UpdateService.DefaultGitHubRepo` (жёстко зашит в клиент)
-   и в `make-release.ps1` поменяй репозиторий/ассеты под свой форк, и твои друзья
-   тоже будут обновляться автоматически. В клиенте `Settings → Updates` галочка
-   **Receive beta updates** включает pre-release сборки.
-
-Единственная просьба: не выдавай свой форк за оригинальный GoPing и сохрани
-упоминание исходного проекта. Всё остальное — на твоё усмотрение.
-
-## Документация
-
-- [docs/API.md](docs/API.md) — REST, WebSocket, шифрование, конфигурация (для форков)
-- [goping/server/README.md](goping/server/README.md) — запуск и устройство сервера
-- [goping/GoPing.Messenger/README.md](goping/GoPing.Messenger/README.md) — сборка клиента
-- [CHANGELOG.md](CHANGELOG.md) — история изменений
-
-## Сборка и тесты
+## Installer
 
 ```powershell
-# сервер: тесты
+powershell -ExecutionPolicy Bypass -File goping\installer\build-installer.ps1
+```
+
+This produces `goping/installer/output/GoPing-Setup-v1.0.0-win-x64.exe` (about 54 MB). It is a native Inno Setup installer with custom wizard graphics. It installs per user to `%LOCALAPPDATA%\Programs\GoPing` without admin rights, creates Start menu and optional desktop shortcuts, and adds an uninstall entry. Chats and settings in `%LOCALAPPDATA%\GoPing` are kept on uninstall.
+
+Silent runs:
+
+```powershell
+GoPing-Setup.exe /VERYSILENT /DIR="C:\Path"
+GoPing-Setup.exe /VERYSILENT /UNINSTALL
+```
+
+## Updates
+
+The update source is hardcoded to `https://github.com/RealBibus/GoPing`.
+
+1. Increase `<Version>` in `goping/GoPing.Messenger/GoPing.Messenger.csproj`.
+2. Run `powershell -ExecutionPolicy Bypass -File goping\installer\make-release.ps1`. It creates `GoPing-win-x64.zip` and a `.sha256` file.
+3. Create a GitHub release tagged `v<version>` and attach both files.
+
+In the client, open Settings, then Updates. New versions download in the background. The card shows release notes and an Install button. The beta checkbox includes pre-releases.
+
+## Forking
+
+1. Fork the repository.
+2. Set your own secrets in `.env`: `JWT_SECRET`, `ADMIN_SECRET`, `MESSAGE_KEY`. If `MESSAGE_KEY` is empty, it is derived from `JWT_SECRET`, and changing `JWT_SECRET` makes old messages unreadable. For calls over the internet, configure coturn with `TURN_URLS`, `TURN_USERNAME` and `TURN_CREDENTIAL`. See [docs/API.md](docs/API.md).
+3. Change the client name, icon, colors and text as needed. REST, WebSocket and call logic are separated in `Services/ApiClient.cs`, `Services/RealtimeClient.cs` and `Services/CallService.cs`.
+4. To write a different client, use [docs/API.md](docs/API.md) as the server contract.
+5. For your own update feed, change `UpdateService.DefaultGitHubRepo` and the repo name in `make-release.ps1`.
+
+Keep a credit to the original project. See [LICENSE](LICENSE).
+
+## Documentation
+
+- [docs/API.md](docs/API.md) (REST, WebSocket, encryption, server config)
+- [goping/server/README.md](goping/server/README.md)
+- [goping/GoPing.Messenger/README.md](goping/GoPing.Messenger/README.md)
+- [CHANGELOG.md](CHANGELOG.md)
+
+## Build and test
+
+```powershell
 cd goping/server
 .\mvnw.cmd test
-
-# клиент: сборка
+cd ..
 dotnet build goping/GoPing.Messenger/GoPing.Messenger.csproj
-
-# клиент: publish + инсталлятор (Inno Setup 6, опционально)
 powershell -ExecutionPolicy Bypass -File goping\installer\build-installer.ps1
 ```

@@ -1,20 +1,26 @@
 <#
 .SYNOPSIS
-Builds a GoPing Messenger release publish and optionally compiles the Inno Setup installer.
+Publishes GoPing Messenger and compiles the branded native Inno Setup installer.
 
 .DESCRIPTION
 1. Runs dotnet publish for GoPing.Messenger (self-contained, win-x64).
-2. Compiles installer/GoPing.iss with ISCC.exe if Inno Setup 6 is installed.
+2. Compiles installer/GoPing.iss with ISCC.exe into installer\output:
+   GoPing-Setup-v{version}-win-x64.exe
+
+The result is a native Windows installer with custom branded wizard images,
+per-user install, desktop/Start menu shortcuts and a normal uninstall entry.
+It is roughly half the size of the old single-file WPF installer because the
+published files are LZMA2-compressed by Inno Setup instead of being embedded
+twice (zip inside a self-contained .NET host).
 
 Prerequisites:
-- .NET SDK 10 (or matching SDK for net10.0-windows target)
-- Inno Setup 6 to compile the .iss (optional; publish still runs without it)
-  https://jrsoftware.org/isdl.php
+- .NET SDK 10 (net10.0-windows target)
+- Inno Setup 6 — https://jrsoftware.org/isdl.php
 
 Usage:
   powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1
-  powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -Configuration Release
-  powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -SkipInstaller
+  powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -Configuration Debug
+  powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -SkipInstaller  # publish only
 #>
 
 [CmdletBinding()]
@@ -34,15 +40,19 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir '..')
 $project = Join-Path $repoRoot 'GoPing.Messenger\GoPing.Messenger.csproj'
+$issFile = Join-Path $scriptDir 'GoPing.iss'
 $publishDir = Join-Path $scriptDir 'publish\win-x64'
 $outputDir = Join-Path $scriptDir 'output'
-$issPath = Join-Path $scriptDir 'GoPing.iss'
 
 if (-not (Test-Path $project)) {
     throw "Project not found: $project"
 }
 
-Write-Host "==> Publishing GoPing Messenger" -ForegroundColor Cyan
+[xml]$csprojXml = Get-Content $project
+$version = $csprojXml.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+if (-not $version) { $version = '1.0.0' }
+
+Write-Host "==> Publishing GoPing Messenger v$version" -ForegroundColor Cyan
 Write-Host "    Project: $project"
 Write-Host "    Config:  $Configuration"
 Write-Host "    Runtime: $Runtime"
@@ -69,40 +79,56 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "==> Publish complete: $publishDir" -ForegroundColor Green
+$publishMb = [math]::Round(((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
+Write-Host "==> App publish complete: $publishDir ($publishMb MB)" -ForegroundColor Green
 
 if ($SkipInstaller) {
-    Write-Host "==> Skipping installer compilation (-SkipInstaller)." -ForegroundColor Yellow
+    Write-Host "==> Skipping installer build (-SkipInstaller)." -ForegroundColor Yellow
     exit 0
 }
 
+if (-not (Test-Path $issFile)) {
+    throw "Inno Setup script not found: $issFile"
+}
+
+# Inno Setup is installed per-user by winget on this machine; check common
+# locations before giving up.
 $isccCandidates = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
     'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
     'C:\Program Files\Inno Setup 6\ISCC.exe'
 )
-
-$iscc = $null
-$cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-if ($cmd) { $iscc = $cmd.Source }
+$iscc = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $iscc) {
-    foreach ($candidate in $isccCandidates) {
-        if (Test-Path $candidate) { $iscc = $candidate; break }
-    }
+    $found = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($found) { $iscc = $found.Source }
+}
+if (-not $iscc) {
+    throw "Inno Setup 6 compiler (ISCC.exe) not found. Install it from https://jrsoftware.org/isdl.php"
 }
 
-if (-not $iscc) {
-    Write-Warning "Inno Setup 6 (ISCC.exe) was not found."
-    Write-Warning "Publish output is ready at: $publishDir"
-    Write-Warning "Install Inno Setup 6 from https://jrsoftware.org/isdl.php, then run:"
-    Write-Warning "  ISCC.exe `"$issPath`""
-    exit 0
+$finalName = "GoPing-Setup-v$version-win-x64.exe"
+$finalPath = Join-Path $outputDir $finalName
+if (Test-Path $finalPath) {
+    Remove-Item -Force $finalPath
 }
 
-Write-Host "==> Compiling installer with $iscc" -ForegroundColor Cyan
-& $iscc $issPath
+Write-Host "==> Compiling branded installer with Inno Setup 6" -ForegroundColor Cyan
+Write-Host "    Compiler: $iscc"
+Write-Host "    Script:   $issFile"
+& $iscc "/dAppVersion=$version" $issFile
+
 if ($LASTEXITCODE -ne 0) {
     throw "ISCC.exe failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "==> Installer ready in: $outputDir" -ForegroundColor Green
-Get-ChildItem $outputDir -Filter *.exe | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+if (-not (Test-Path $finalPath)) {
+    throw "Installer was not produced: $finalPath"
+}
+
+$sizeMb = [math]::Round((Get-Item $finalPath).Length / 1MB, 1)
+Write-Host ""
+Write-Host "==> Installer ready:" -ForegroundColor Green
+Write-Host "    $finalPath ($sizeMb MB)"
+Write-Host "    Native Inno Setup wizard with custom GoPing branding."
+Write-Host "    Per-user install, no admin rights required."

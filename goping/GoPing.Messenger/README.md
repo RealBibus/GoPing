@@ -1,100 +1,58 @@
-# GoPing — WPF-клиент
+# GoPing client
 
-**GoPing — a local messenger for you and your friends, with login via GitHub or a server token!**
+Windows desktop client for GoPing. Built with WPF on .NET 10 and WebView2.
 
-Десктопный клиент для Windows (WPF, .NET 10). Текущая версия: минималистичный
-вход, профиль, личные чаты и сообщения, зашифрованные ГОСТ Р 34.12-2015.
+## Requirements
 
-## Что уже есть
+- Windows 10 or 11, x64
+- .NET 10 SDK for building
+- WebView2 Runtime (preinstalled on most Windows 10 and 11 systems)
 
-- [x] Плоский минималистичный интерфейс: без свечения, градиентов и анимаций,
-      1 px границы, спокойные цвета
-- [x] Вход через GitHub (браузер + опрос состояния)
-- [x] Вход по серверному токену `GOPING-XXXXXXXXXXXX`
-- [x] Запоминание сессии между запусками (DPAPI, файл на пользователя)
-- [x] Автоматическое продление access-токена через refresh
-- [x] Профиль: никнейм, username, описание, загрузка/удаление аватарки
-- [x] Список личных чатов и создание чата по username
-- [x] Переписка с автоматическим обновлением каждые 3 секунды
-- [x] Шифрование сообщений ГОСТ Р 34.12-2015 «Кузнечик» (CTR) + HMAC-SHA256
-- [x] Выход из аккаунта
+## Build and run
 
-## Как собрать и запустить
+From the `goping` folder:
 
 ```powershell
-# из корня репозитория
-dotnet build GoPing.sln
-dotnet run --project GoPing.Messenger\GoPing.Messenger.csproj
+dotnet build GoPing.Messenger/GoPing.Messenger.csproj
+dotnet run --project GoPing.Messenger
 ```
 
-Собранное приложение: `GoPing.Messenger\bin\Debug\net10.0-windows\GoPing.exe`.
-
-Сервер по умолчанию — `http://localhost:8080`. Другой адрес задаётся
-переменной окружения `GOPING_API_URL`:
+The client uses `http://localhost:8080` by default. To use another server:
 
 ```powershell
 $env:GOPING_API_URL = "http://192.168.1.10:8080"
-dotnet run --project GoPing.Messenger\GoPing.Messenger.csproj
+dotnet run --project GoPing.Messenger
 ```
 
-## Вход
+## Sign in
 
-### Через GitHub
+Use a `GOPING-...` server token or the GitHub button. GitHub login requires `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` on the server. The first token login creates the user, later logins open the same account.
 
-Нажмите **Continue with GitHub** — откроется браузер. После подтверждения
-вернитесь в приложение: клиент сам подхватит сессию. Никнейм и аватар
-заполняются из GitHub при первом входе; потом их можно менять — повторный
-вход внесённые изменения не затрёт.
+## Features
 
-Требует настроенного OAuth App на сервере (см. `server/README.md`).
+- 1:1 audio and video calls over WebRTC, with fullscreen overlay and speaking indicator
+- Screen sharing with WGC or GDI capture and a quality picker
+- Voice messages with hold-to-record and waveform playback
+- Chats with edit, forward, reply, pins and search
+- In-app console for server, TURN and Radmin VPN controls
+- Updates from GitHub Releases
 
-### По серверному токену
+## Data locations
 
-Администратор сервера выдаёт токен вида `GOPING-Ab3_x-9Qw2Z0`. Вставьте его
-в поле **Server token** и нажмите **Sign in**. Первый вход создаёт аккаунт и
-навсегда привязывает к нему токен; дальше этот же токен открывает тот же
-профиль.
+- Session: `%LOCALAPPDATA%\GoPing\session.dat`, protected with DPAPI
+- Logs: `%LOCALAPPDATA%\GoPing\` (`app-console.log`, `call.log`, `voice-debug.log`, `pin-debug.log`)
+- Installed app: `%LOCALAPPDATA%\Programs\GoPing`
 
-Приложение запоминает токен, поэтому повторно вводить его не нужно.
-
-## Чаты и сообщения
-
-- **New chat** — введите username друга (например, `ping_ab12cd34`). Сервер
-  создаст личный чат; повторный ввод того же username откроет существующий.
-- Введите сообщение и нажмите **Send** или **Enter**. **Shift+Enter**
-  оставлен для будущего многострочного ввода.
-- Список чатов и текущая переписка обновляются раз в 3 секунды, поэтому
-  ответы друзей появляются без перезапуска.
-- Шифрование выполняет сервер перед записью в SQLite: ГОСТ Р 34.12-2015
-  «Кузнечик» в режиме CTR (ГОСТ Р 34.13-2015), целостность — HMAC-SHA256.
-  В интерфейсе состояние чата и отправки — нейтральная надпись «Encrypted».
-- Клиент общается с сервером по HTTP; при выходе за пределы localhost
-  поставьте HTTPS reverse proxy.
-
-## Где хранится сессия
-
-`%LOCALAPPDATA%\GoPing\session.dat` — зашифрован Windows DPAPI для текущего
-пользователя. Файл нельзя перенести на другого пользователя или машину.
-**Sign out** удаляет его.
-
-## Структура
+## Layout
 
 ```
-GoPing.Messenger/
-├── App.xaml, App.xaml.cs        общие стили и восстановление сессии
-├── LoginWindow.xaml(.cs)        вход: GitHub + серверный токен
-├── MainWindow.xaml(.cs)         профиль, чаты и переписка
-├── Models/ApiModels.cs          DTO сервера
-├── Services/
-│   ├── ApiClient.cs             HTTP, refresh, GitHub-опрос, чаты, сообщения
-│   ├── ApiException.cs          ошибка API с кодом
-│   └── SessionStore.cs          DPAPI-хранилище сессии
-└── GoPing.Messenger.csproj
+App.xaml, App.xaml.cs        application styles and startup
+LoginWindow.xaml(.cs)        GitHub and token login
+MainWindow.xaml(.cs)         chats, calls, settings and console
+Assets/call/                 WebView2 call page
+Assets/voice/                WebView2 voice recorder
+Services/ApiClient.cs        REST calls
+Services/RealtimeClient.cs   WebSocket events
+Services/CallService.cs      WebRTC call bridge
+Services/UpdateService.cs    GitHub Releases updater
 ```
-
-## Дизайн
-
-- Фон `#FAFAFA`, поверхности `#FFFFFF`, текст `#18181B`.
-- Акцент — спокойный зелёный `#16A34A`, опасность — `#DC2626`.
-- Никаких теней, blur, glow и переходов: только рамки и отступы.
-- Все стили — в `App.xaml`, окна не содержат локальных «украшений».

@@ -1,67 +1,53 @@
-# GoPing API — документация для форков
+# GoPing API
 
-Полный контракт сервера GoPing: REST, WebSocket, шифрование, конфигурация.
-Клиент не важен — WPF, браузер или мобильное приложение работают с одним и тем же API.
+Contract for GoPing clients and forks. Covers REST, WebSocket, encryption and server configuration.
 
-- Базовый URL: `http://<host>:8080` (порт настраивается).
-- Все ID — UUID-строки. Все времена — ISO-8601 (`2026-05-23T12:00:00Z`).
-- Аутентификация: заголовок `Authorization: Bearer <accessToken>` для всех
-  `/api/v1/**`, кроме перечисленных ниже публичных путей.
-- Ошибки — единый конверт:
+- Base URL: `http://<host>:8080` (configurable).
+- IDs are UUID strings. Timestamps use ISO-8601, for example `2026-05-23T12:00:00Z`.
+- Authenticate with `Authorization: Bearer <accessToken>` on `/api/v1/**`, except the public paths listed below.
+- Errors use one envelope:
 
 ```json
-{ "error": { "code": "VALIDATION_ERROR", "message": "…", "details": { "text": "…" }, "requestId": "…" } }
+{ "error": { "code": "VALIDATION_ERROR", "message": "...", "details": { "text": "..." }, "requestId": "..." } }
 ```
 
-Коды: `UNAUTHORIZED`, `INVALID_SERVER_TOKEN`, `INVALID_REFRESH_TOKEN`, `NOT_FOUND`,
-`INVALID_ID`, `VALIDATION_ERROR`, `USERNAME_TAKEN` (409), `FORBIDDEN`,
-`DELETE_OTHERS_DISABLED` (403), `INVALID_PIN_SCOPE`, `MESSAGE_DAMAGED`,
-`AVATAR_TOO_LARGE` / `VOICE_TOO_LARGE` (413), `UNSUPPORTED_MEDIA_TYPE` (415),
-`INVALID_VOICE`, `RATE_LIMITED` (429, заголовок `Retry-After: 60`),
-`ADMIN_DISABLED` (503), `ADMIN_UNAUTHORIZED`, `GITHUB_NOT_CONFIGURED` (503),
-`GITHUB_AUTH_FAILED` (401), `GITHUB_STATE_EXPIRED` (410), `GITHUB_ALREADY_LINKED` (409),
-`DB_UNAVAILABLE` (503). Каждый ответ содержит `X-Request-ID`.
+Error codes include `UNAUTHORIZED`, `INVALID_SERVER_TOKEN`, `INVALID_REFRESH_TOKEN`, `NOT_FOUND`, `INVALID_ID`, `VALIDATION_ERROR`, `USERNAME_TAKEN` (409), `FORBIDDEN`, `DELETE_OTHERS_DISABLED` (403), `INVALID_PIN_SCOPE`, `MESSAGE_DAMAGED`, `AVATAR_TOO_LARGE` and `VOICE_TOO_LARGE` (413), `UNSUPPORTED_MEDIA_TYPE` (415), `INVALID_VOICE`, `RATE_LIMITED` (429 with `Retry-After`), `ADMIN_DISABLED` (503), `ADMIN_UNAUTHORIZED`, `GITHUB_NOT_CONFIGURED` (503), `GITHUB_AUTH_FAILED` (401), `GITHUB_STATE_EXPIRED` (410), `GITHUB_ALREADY_LINKED` (409) and `DB_UNAVAILABLE` (503). Every response has `X-Request-ID`.
 
----
+## 1. Authentication
 
-## 1. Аутентификация
+There are no passwords or registration. Use a server token or GitHub OAuth.
 
-Паролей и регистрации нет. Вход — по серверному токену или через GitHub OAuth.
-
-### POST `/api/v1/auth/token` (публичный)
+### POST `/api/v1/auth/token` (public)
 
 ```json
 { "token": "GOPING-XXXXXXXXXXXX" }
 ```
 
-Токен выдаёт админ (§7). Первый вход **активирует** токен: создаётся пользователь
-`ping_xxxxxxxx` / `Ping XXXX`, токен навсегда привязывается к нему. Повторные
-входы с тем же токеном попадают в того же пользователя.
+The admin issues tokens (section 7). The first login activates the token and creates user `ping_xxxxxxxx` with nickname `Ping XXXX`. Later logins with the same token open the same account.
 
-### POST `/api/v1/auth/refresh` (публичный)
+### POST `/api/v1/auth/refresh` (public)
 
 ```json
-{ "refreshToken": "…" }
+{ "refreshToken": "..." }
 ```
 
-**Ротация**: каждый refresh выдаёт новую пару токенов, старый refresh гасится.
-Повторное использование погашенного refresh-токена гасит **все** сессии
-пользователя (защита от кражи).
+Each refresh returns a new token pair and revokes the old refresh token. Reusing a revoked refresh token revokes all sessions of that user.
 
-### POST `/api/v1/auth/logout` (публичный)
+### POST `/api/v1/auth/logout` (public)
 
 ```json
-{ "refreshToken": "…" }
+{ "refreshToken": "..." }
 ```
-→ `204`. Гасит сессию.
 
-### Ответ всех успешных входов — `AuthResponse`
+Returns `204` and revokes the session.
+
+### AuthResponse
 
 ```json
 {
-  "user": { "id": "…", "username": "…", "nickname": "…", "bio": "…",
-            "avatarUrl": "…", "createdAt": "…", "updatedAt": "…",
-            "online": true, "lastSeenAt": "…" },
+  "user": { "id": "...", "username": "...", "nickname": "...", "bio": "...",
+            "avatarUrl": "...", "createdAt": "...", "updatedAt": "...",
+            "online": true, "lastSeenAt": "..." },
   "tokenType": "Bearer",
   "accessToken": "<JWT>",
   "refreshToken": "<opaque>",
@@ -70,287 +56,205 @@
 }
 ```
 
-- **Access token** — JWT HS256 (`JWT_SECRET`), claims: `sub` = userId,
-  `token_use: "access"`, `iss`, `iat`/`nbf`/`exp`, `jti`. TTL по умолчанию
-  **15 минут** (`ACCESS_TOKEN_TTL`). Тот же токен используется для WebSocket.
-- **Refresh token** — случайные 32 байта (Base64URL), на сервере хранится
-  SHA-256-хеш. TTL по умолчанию **30 дней** (`REFRESH_TOKEN_TTL`).
+Access tokens are HS256 JWTs signed with `JWT_SECRET`. Claims include `sub`, `token_use: "access"`, `iss`, `iat`, `nbf`, `exp` and `jti`. Default lifetime is 15 minutes (`ACCESS_TOKEN_TTL`). The same token is used for WebSocket. Refresh tokens are 32 random bytes in Base64URL. Only their SHA-256 hash is stored. Default lifetime is 30 days (`REFRESH_TOKEN_TTL`).
 
-### GitHub OAuth (poll-флоу, клиент не видит code)
+### GitHub OAuth
 
-| Метод | Путь | Описание |
+The client never sees the OAuth code.
+
+| Method | Path | Description |
 |---|---|---|
-| GET | `/api/v1/auth/github/start` | → `{"authorizeUrl", "state", "expiresAt"}`. State живёт 10 минут. 503 `GITHUB_NOT_CONFIGURED`, если OAuth не настроен. |
-| GET | `/api/v1/auth/github/callback?code&state` | Сюда редиректит GitHub (браузер). Сервер меняет code на токен, тянет профиль, отдаёт HTML-страницу успеха/ошибки. Токены здесь не выдаются. |
-| GET | `/api/v1/auth/github/poll?state=…` | Клиент опрашивает: `{"status":"pending","auth":null}` → `{"status":"ready","auth":AuthResponse}`. State потребляется один раз. 410 — истёк, 401 — отказ/сбой. |
+| GET | `/api/v1/auth/github/start` | Returns `authorizeUrl`, `state`, `expiresAt`. State lives 10 minutes. Returns 503 `GITHUB_NOT_CONFIGURED` when OAuth is not set up. |
+| GET | `/api/v1/auth/github/callback?code&state` | Browser redirect target. The server exchanges the code, loads the profile and returns an HTML page. No tokens are returned here. |
+| GET | `/api/v1/auth/github/poll?state=...` | Client polling. Returns `{"status":"pending","auth":null}` or `{"status":"ready","auth":AuthResponse}`. State is consumed once. 410 means expired, 401 means failed. |
 
-Первый вход создаёт пользователя: username из GitHub-логина (sanitized,
-уникализированный), nickname и аватар — из профиля GitHub. Аккаунт матчится
-по числовому `github_id`.
+First login creates a user from the GitHub login and profile. Accounts match on numeric `github_id`. Nickname and avatar can be changed later in the client.
 
-### Rate limits
+Rate limits are per IP in a 60 second window. Auth and admin paths allow 30 requests per minute (`AUTH_RATE_LIMIT`). Username checks allow 120 (`AVAILABILITY_RATE_LIMIT`). Exceeding a limit returns 429.
 
-Per-IP, окно 60 с: auth/admin пути — 30 запросов/мин (`AUTH_RATE_LIMIT`),
-`username-available` — 120/мин (`AVAILABILITY_RATE_LIMIT`). Превышение → 429.
+## 2. Users
 
----
+UserDto fields: `id`, `username`, `nickname`, `bio`, `avatarUrl`, `createdAt`, `updatedAt`, `online`, `lastSeenAt`.
 
-## 2. Пользователи
-
-**UserDto**: `id, username, nickname, bio, avatarUrl, createdAt, updatedAt, online, lastSeenAt`.
-
-| Метод | Путь | Тело / параметры | Ответ |
+| Method | Path | Body or parameters | Response |
 |---|---|---|---|
-| GET | `/api/v1/users/me` | — | `{"user": UserDto}` |
+| GET | `/api/v1/users/me` | none | `{"user": UserDto}` |
 | PATCH | `/api/v1/users/me` | `{"nickname"?, "username"?, "bio"?}` | `{"user": UserDto}` |
-| GET | `/api/v1/users/search?q=…` | подстрока username, без учёта регистра | `{"users": [UserDto]}` (≤20, без себя) |
-| GET | `/api/v1/users/username-available?username=…` | **публичный** | `{"username", "available", "reason": "invalid"\|"reserved"\|"taken"\|null}` |
-| POST | `/api/v1/users/me/avatar` | multipart, часть **`avatar`** | `{"user": UserDto}` |
-| DELETE | `/api/v1/users/me/avatar` | — | `{"user": UserDto}` |
+| GET | `/api/v1/users/search?q=...` | username substring, case insensitive | `{"users": [UserDto]}`, up to 20, without self |
+| GET | `/api/v1/users/username-available?username=...` | public | `{"username", "available", "reason": "invalid" \| "reserved" \| "taken" \| null}` |
+| POST | `/api/v1/users/me/avatar` | multipart field `avatar` | `{"user": UserDto}` |
+| DELETE | `/api/v1/users/me/avatar` | none | `{"user": UserDto}` |
 | GET | `/api/v1/users/{id}` | UUID | `{"user": UserDto}` |
-| GET | `/api/v1/users/username/{username}` | — | `{"user": UserDto}` |
+| GET | `/api/v1/users/username/{username}` | username | `{"user": UserDto}` |
 
-Ограничения: nickname ≤50 символов (не уникален); username —
-`^[a-z][a-z0-9_]{2,31}$`, уникален, есть зарезервированные (admin, root, goping, …);
-bio ≤300. Аватар: JPEG/PNG/GIF, ≤4096×4096, ≤5 МиБ (`MAX_AVATAR_BYTES`).
+Nickname is at most 50 characters and not unique. Username matches `^[a-z][a-z0-9_]{2,31}$`, is unique and has reserved names such as `admin`, `root` and `goping`. Bio is at most 300 characters. Avatars are JPEG, PNG or GIF, up to 4096 by 4096 and 5 MiB. There is no friend list, direct chats are created from a username.
 
-Списка друзей нет — личный чат создаётся сразу по username (§3).
+## 3. Chats and messages
 
----
+ChatDto fields: `id`, `kind` (`direct` or `favorites`), `title`, `username`, `avatarUrl`, `createdAt`, `peerUserId`, `lastMessageText`, `lastMessageAt`, `peerOnline`, `peerLastSeenAt`, `peerTyping`.
 
-## 3. Чаты и сообщения
+MessageDto fields: `id`, `chatId`, `sender` with `id`, `username`, `nickname`, `avatarUrl`, `text`, `algorithm`, `kind` (`text`, `voice` or `call`), `createdAt`, `replyTo` or null, `status` (`sent` or `read`), `pinScope` (`me`, `chat` or null), `editedAt`, `forwardedFromSenderNickname`, `forwardedFromText`.
 
-**ChatDto**: `id, kind ("direct"|"favorites"), title, username, avatarUrl,
-createdAt, peerUserId, lastMessageText, lastMessageAt, peerOnline,
-peerLastSeenAt, peerTyping`.
+The `status` field is relative to the viewer. `read` appears on your own messages after the peer reads them. `nextCursor` is currently always null.
 
-**MessageDto**: `id, chatId, sender {id, username, nickname, avatarUrl}, text,
-algorithm, kind ("text"|"voice"|"call"), createdAt,
-replyTo {id, text, senderNickname}|null, status ("sent"|"read"),
-pinScope ("me"|"chat"|null), editedAt, forwardedFromSenderNickname, forwardedFromText`.
-
-`status` относителен смотрящего: `"read"` только у своих сообщений после
-прочтения собеседником. `nextCursor` в списках пока всегда `null`
-(окно по limit, без курсорной пагинации).
-
-| Метод | Путь | Тело / параметры | Ответ |
+| Method | Path | Body or parameters | Response |
 |---|---|---|---|
-| GET | `/api/v1/chats?limit=30` | limit 1–100 | `{"items": [ChatDto], "nextCursor": null}` |
-| POST | `/api/v1/chats` | `{"username": "peer"}` | 201 ChatDto (идемпотентно; шлёт `chat.updated`) |
-| POST | `/api/v1/chats/{chatId}/typing` | — | 204 (TTL 5 с; WS `typing`) |
-| POST | `/api/v1/chats/{chatId}/read` | — | 204 (WS `messages.read`) |
-| GET | `/api/v1/chats/{chatId}/messages?limit=50` | limit 1–100 | `{"items": [MessageDto], …}` — новейшее окно |
-| GET | `/api/v1/chats/{chatId}/pins` | — | `{"items": [MessageDto], …}` — все видимые пины |
+| GET | `/api/v1/chats?limit=30` | limit 1 to 100 | `{"items": [ChatDto], "nextCursor": null}` |
+| POST | `/api/v1/chats` | `{"username": "peer"}` | 201 ChatDto, idempotent, sends `chat.updated` |
+| POST | `/api/v1/chats/{chatId}/typing` | none | 204, TTL 5 seconds, WS `typing` |
+| POST | `/api/v1/chats/{chatId}/read` | none | 204, WS `messages.read` |
+| GET | `/api/v1/chats/{chatId}/messages?limit=50` | limit 1 to 100 | `{"items": [MessageDto], ...}`, newest window |
+| GET | `/api/v1/chats/{chatId}/pins` | none | `{"items": [MessageDto], ...}`, all visible pins |
 | POST | `/api/v1/chats/{chatId}/messages` | `{"text", "replyToId"?}` | 201 MessageDto |
-| POST | `/api/v1/chats/{chatId}/messages/voice` | multipart (§5) | 201 MessageDto |
-| PATCH | `/api/v1/chats/{chatId}/messages/{messageId}` | `{"text"}` | 200 MessageDto (только свои **текстовые**; ставит `editedAt`) |
-| POST | `/api/v1/chats/{chatId}/messages/forward` | `{"fromChatId", "messageId"}` | 201 MessageDto в целевом чате |
-| DELETE | `/api/v1/chats/{chatId}/messages/{messageId}` | `{"forEveryone": bool}` (default false) | 204 |
-| POST | `/api/v1/chats/{chatId}/messages/{messageId}/pin` | `{"scope": "me"\|"chat"}` | 204 |
-| DELETE | `/api/v1/chats/{chatId}/messages/{messageId}/pin` | `{"scope": "me"\|"chat"}` | 204 |
+| POST | `/api/v1/chats/{chatId}/messages/voice` | multipart, section 5 | 201 MessageDto |
+| PATCH | `/api/v1/chats/{chatId}/messages/{messageId}` | `{"text"}` | 200 MessageDto, own text messages only, sets `editedAt` |
+| POST | `/api/v1/chats/{chatId}/messages/forward` | `{"fromChatId", "messageId"}` | 201 MessageDto in the target chat |
+| DELETE | `/api/v1/chats/{chatId}/messages/{messageId}` | `{"forEveryone": bool}`, default false | 204 |
+| POST | `/api/v1/chats/{chatId}/messages/{messageId}/pin` | `{"scope": "me" \| "chat"}` | 204 |
+| DELETE | `/api/v1/chats/{chatId}/messages/{messageId}/pin` | `{"scope": "me" \| "chat"}` | 204 |
 
-Нюансы:
+Text length is 1 to 4000 code points. Replies must be in the same chat. `GET /chats` also sends a presence heartbeat and creates a `Favorites` self chat for notes and forwarding to yourself. With `forEveryone=true`, delete removes the message for everyone. Deleting other people's messages requires `ALLOW_DELETE_OTHERS_MESSAGES=true`, otherwise the server returns 403 `DELETE_OTHERS_DISABLED`. With `false`, the message is hidden only for you. Forwarding decrypts the original and encrypts it again for the target chat. Damaged messages return 400 `MESSAGE_DAMAGED`. Forwarded messages include `forwardedFromSenderNickname` and `forwardedFromText` with up to 300 characters. Pin scope `me` is visible only to you, `chat` to everyone in the chat. Calls are not a separate REST resource. The server writes `kind:"call"` messages with `text` set to `{"status":"ended"|"missed"|"declined"|"cancelled","durationSec":N}` and delivers them as normal `message.created` events.
 
-- Текст: 1–4000 кодпоинтов; reply — только внутри того же чата.
-- `GET /chats` заодно шлёт presence-heartbeat и автосоздаёт чат **Favorites**
-  (self-chat для заметок и пересылки себе).
-- Удаление: `forEveryone=true` — жёсткое удаление (чужие можно, если
-  `ALLOW_DELETE_OTHERS_MESSAGES=true`, иначе 403 `DELETE_OTHERS_DISABLED`);
-  `false` — скрытие только для себя.
-- Пересылка: сервер расшифровывает оригинал и **заново шифрует** в целевой чат
-  (никакого копирования ciphertext). Повреждённое сообщение → 400 `MESSAGE_DAMAGED`.
-  Ставятся `forwardedFromSenderNickname` и `forwardedFromText` (превью ≤300 символов).
-- Пин `scope=me` виден только себе, `scope=chat` — всем в чате.
-- **Звонки в чате** — не отдельный REST-ресурс: сервер сам пишет сообщения
-  `kind:"call"`, их `text` — JSON `{"status":"ended"|"missed"|"declined"|"cancelled","durationSec":N}`.
-  Приходят как обычные `message.created`.
+## 4. Presence, config and RTC
 
----
-
-## 4. Presence, конфиг, RTC
-
-| Метод | Путь | Ответ |
+| Method | Path | Response |
 |---|---|---|
-| POST | `/api/v1/presence/heartbeat` | 204. Онлайн = активный WS или heartbeat свежее 25 с. |
+| POST | `/api/v1/presence/heartbeat` | 204. Online means an active WebSocket or a heartbeat newer than 25 seconds. |
 | GET | `/api/v1/client-config` | `{"allowDeleteOthersMessages": bool}` |
-| GET | `/api/v1/rtc/config` | `{"iceServers": [{"urls": ["stun:…"]}, {"urls": ["turn:…"], "username", "credential"}]}` — TURN-запись только если задан `TURN_URLS`. |
-| GET | `/healthz` (публичный, без префикса) | `{"status":"ok"}` |
-| GET | `/readyz` (публичный) | `{"status":"ready"}` или 503 `DB_UNAVAILABLE` |
+| GET | `/api/v1/rtc/config` | `{"iceServers": [...]}`. The TURN entry appears only when `TURN_URLS` is set. |
+| GET | `/healthz` | Public, no prefix. `{"status":"ok"}` |
+| GET | `/readyz` | Public. `{"status":"ready"}` or 503 `DB_UNAVAILABLE` |
 
-### Медиа (публично, без auth)
+Public media paths are served from `UPLOAD_DIR` with `Cache-Control: public, max-age=86400`:
 
-`GET /media/**` раздаётся из `UPLOAD_DIR` с `Cache-Control: public, max-age=86400`:
 - `/media/avatars/<uuid>.<jpg|png|gif>`
 - `/media/voice/<uuid>.<ext>`
 
-`avatarUrl` в ответах уже абсолютный (префикс `PUBLIC_BASE_URL`; у GitHub-входа —
-URL аватара GitHub).
+`avatarUrl` in responses is absolute, using `PUBLIC_BASE_URL`. GitHub users may have a GitHub avatar URL.
 
----
+## 5. Voice messages
 
-## 5. Голосовые сообщения
+POST `/api/v1/chats/{chatId}/messages/voice` uses `multipart/form-data` with these fields:
 
-### POST `/api/v1/chats/{chatId}/messages/voice` — `multipart/form-data`
+- `audio`: the file
+- `durationSec`: optional integer from 0 to 3600
+- `replyToId`: optional UUID
 
-- часть **`audio`** — файл;
-- **`durationSec`** (int, опционально, 0–3600);
-- **`replyToId`** (UUID, опционально).
-
-Валидация: непустой, ≤10 МиБ (`VOICE_TOO_LARGE` 413); формат —
-**webm, ogg, mp3, wav, m4a, mp4** (mp4/m4a хранятся как `.m4a`), иначе 415.
-Файл сохраняется в `UPLOAD_DIR/voice/<uuid>.<ext>`.
-
-Хранимое сообщение: `kind:"voice"`, зашифрованный `text` =
-`{"path":"/media/voice/<uuid>.<ext>","durationSec":N}`. В API/WS ответах `path`
-уже заменён на абсолютный URL (`PUBLIC_BASE_URL + /media/voice/…`) — клиенту
-достаточно скачать его и проиграть.
-
----
+The file must be non-empty and at most 10 MiB. Allowed formats are webm, ogg, mp3, wav, m4a and mp4. mp4 and m4a are stored as `.m4a`. Other formats return 415. Files are saved to `UPLOAD_DIR/voice/<uuid>.<ext>`. The stored message has `kind:"voice"` and encrypted `text` equal to `{"path":"/media/voice/<uuid>.<ext>","durationSec":N}`. API and WebSocket responses replace `path` with an absolute URL built from `PUBLIC_BASE_URL`.
 
 ## 6. WebSocket `/api/v1/ws`
 
-**Подключение**: `ws://host:8080/api/v1/ws?token=<accessToken>` — JWT
-проверяется на handshake, отдельного сообщения-логина нет. При коннекте:
-presence-heartbeat, броадкаст `presence` собеседникам, доставка отложенных
-call-invite. При закрытии последнего сокета — offline + `presence`.
-Поддерживается несколько сессий одного пользователя.
+Connect to `ws://host:8080/api/v1/ws?token=<accessToken>`. The JWT is checked during the handshake, there is no login frame. On connect the server sends a presence heartbeat, broadcasts `presence` to peers and delivers pending call invites. When the last socket closes, the user goes offline and `presence` is broadcast. Multiple sessions per user are supported.
 
-### Клиент → сервер (JSON-фреймы)
+Client to server frames:
 
-| `type` | Поля | Эффект |
+| `type` | Fields | Effect |
 |---|---|---|
-| `ping` | — | ответ `{"type":"pong"}` |
-| `typing` | `chatId` | броадкаст `typing` собеседникам |
-| `read` | `chatId` | отметка прочтения, броадкаст `messages.read` |
-| `call.invite` | `chatId`, `callId` (UUID, генерит клиент) | создаёт звонок в памяти, шлёт `call.invite` пиру |
-| `call.accept` | `callId` | пир получает `call.accepted` |
-| `call.reject` | `callId` | пир получает `call.rejected`; в чат пишется «declined» |
-| `call.end` | `callId`, `reason?` (default `"hangup"`) | пир получает `call.ended`; в чат «ended» (если был accept) или «missed» |
-| `call.signal` | `callId`, `kind` (`"offer"`/`"answer"`/`"ice"`), `data` (SDP/ICE, произвольный JSON) | relay пиру как есть |
-| `call.rejoin` | `callId` | после реконнекта WS → пир получает `call.peer-rejoined` (нужен ICE-restart) |
+| `ping` | none | Returns `pong` |
+| `typing` | `chatId` | Broadcasts `typing` |
+| `read` | `chatId` | Marks as read, broadcasts `messages.read` |
+| `call.invite` | `chatId`, `callId` (UUID from client) | Creates the call in memory, sends `call.invite` to the peer |
+| `call.accept` | `callId` | Peer receives `call.accepted` |
+| `call.reject` | `callId` | Peer receives `call.rejected`, chat gets declined |
+| `call.end` | `callId`, `reason?` default `hangup` | Peer receives `call.ended`, chat gets ended or missed |
+| `call.signal` | `callId`, `kind` (`offer`, `answer`, `ice`), `data` | Relayed to the peer as is |
+| `call.rejoin` | `callId` | Peer receives `call.peer-rejoined` so ICE restart can run |
 
-Неизвестные типы молча игнорируются.
+Unknown types are ignored.
 
-### Сервер → клиент
+Server to client frames:
 
-| `type` | Поля | Кому |
+| `type` | Fields | Recipients |
 |---|---|---|
-| `pong` | — | запросившему |
-| `message.created` | `chatId`, `message` (MessageDto) | участникам чата (+ `chat.updated` каждому) |
-| `message.edited` | `chatId`, `message` | участникам (+ `chat.updated`) |
-| `message.deleted` | `chatId`, `messageId`, `forEveryone` | чату, если forEveryone; иначе только удалившему (+ `chat.updated`) |
-| `message.pinned` | `chatId`, `messageId`, `scope`, `actorId`, `pinned` (bool) | только actor при scope=me, иначе чату |
-| `chat.updated` | `chat` (ChatDto, персонализированный) | каждому участнику; также при создании чата |
-| `typing` | `chatId`, `userId` | участникам, кроме печатающего |
-| `messages.read` | `chatId`, `readerId`, `readAt`, `upToMessageId?` | участникам |
-| `presence` | `userId`, `online`, `lastSeenAt?` | всем собеседникам пользователя |
-| `call.invite` | `callId`, `chatId`, `fromUserId`, `toUserId` | вызываемому (повторно доставляется при реконнекте, если звонку ≤10 мин) |
-| `call.accepted` / `call.rejected` | `callId`, `chatId`, `fromUserId`, `toUserId` | пиру |
-| `call.ended` | `callId`, `chatId?`, `fromUserId?`, `toUserId?`, `reason` (`"hangup"` / `"timeout"` / `"server-restart"` / кастом) | пиру; обоим при TTL 10 мин |
-| `call.signal` | `callId`, `chatId`, `fromUserId`, `toUserId`, `kind`, `data` | пиру |
-| `call.peer-rejoined` | `callId`, `chatId`, `fromUserId`, `toUserId` | пиру |
+| `pong` | none | Requester |
+| `message.created` | `chatId`, `message` | Chat members, plus `chat.updated` |
+| `message.edited` | `chatId`, `message` | Chat members, plus `chat.updated` |
+| `message.deleted` | `chatId`, `messageId`, `forEveryone` | Whole chat if forEveryone, otherwise only the deleter |
+| `message.pinned` | `chatId`, `messageId`, `scope`, `actorId`, `pinned` | Actor only for scope me, otherwise the chat |
+| `chat.updated` | `chat` | Each chat member, also on chat creation |
+| `typing` | `chatId`, `userId` | Chat members except the sender |
+| `messages.read` | `chatId`, `readerId`, `readAt`, `upToMessageId?` | Chat members |
+| `presence` | `userId`, `online`, `lastSeenAt?` | All peers of the user |
+| `call.invite` | `callId`, `chatId`, `fromUserId`, `toUserId` | Callee, redelivered on reconnect for calls up to 10 minutes old |
+| `call.accepted`, `call.rejected` | `callId`, `chatId`, `fromUserId`, `toUserId` | Peer |
+| `call.ended` | `callId`, `chatId?`, `fromUserId?`, `toUserId?`, `reason` | Peer, or both at the 10 minute TTL |
+| `call.signal` | `callId`, `chatId`, `fromUserId`, `toUserId`, `kind`, `data` | Peer |
+| `call.peer-rejoined` | `callId`, `chatId`, `fromUserId`, `toUserId` | Peer |
 
-Состояние звонков — **только в памяти** (TTL 10 мин). Рестарт сервера →
-`call.ended reason:"server-restart"`. Медиа (аудио/видео/экран) идёт **P2P
-через WebRTC**, сервер его не видит.
+Call state lives in memory only and expires after 10 minutes. A server restart sends `call.ended` with reason `server-restart`. Media goes peer to peer through WebRTC and is never seen by the server.
 
-### Пример: звонок
+Call flow example:
 
-1. A: `{"type":"call.invite","chatId":"…","callId":"<uuid>"}`
-2. B получает `call.invite` → шлёт `{"type":"call.accept","callId":"…"}`
-3. A получает `call.accepted` → создаёт RTCPeerConnection, шлёт
-   `{"type":"call.signal","callId":"…","kind":"offer","data":{sdp…}}`
-4. B отвечает `kind:"answer"`, обе стороны обмениваются `kind:"ice"`.
-5. Завершение: `{"type":"call.end","callId":"…","reason":"hangup"}`.
+1. A sends `{"type":"call.invite","chatId":"...","callId":"<uuid>"}`.
+2. B receives `call.invite` and sends `call.accept`.
+3. A receives `call.accepted`, creates an RTCPeerConnection and sends a `call.signal` offer.
+4. B answers with kind `answer`, both sides exchange `ice` signals.
+5. Either side sends `call.end` with reason `hangup`.
 
----
+## 7. Admin tokens
 
-## 7. Админ: выдача серверных токенов
+Send header `X-Admin-Secret` with the value of `ADMIN_SECRET`. This is not a Bearer token. An empty `ADMIN_SECRET` returns 503 `ADMIN_DISABLED`.
 
-Заголовок **`X-Admin-Secret`** = `ADMIN_SECRET` (не Bearer!). Пустой
-`ADMIN_SECRET` → 503 `ADMIN_DISABLED`.
-
-| Метод | Путь | Тело | Ответ |
+| Method | Path | Body | Response |
 |---|---|---|---|
-| POST | `/api/v1/admin/tokens` | `{"label"?}` (≤80 симв.) | 201 `{"token": AdminTokenDto, "value": "GOPING-…"}` — сырое значение **один раз** |
-| GET | `/api/v1/admin/tokens` | — | `{"items": [AdminTokenDto]}` |
-| DELETE | `/api/v1/admin/tokens/{id}` | — | 204 (отзыв) |
+| POST | `/api/v1/admin/tokens` | `{"label"?}` up to 80 characters | 201 `{"token": AdminTokenDto, "value": "GOPING-..."}`, raw value shown once |
+| GET | `/api/v1/admin/tokens` | none | `{"items": [AdminTokenDto]}` |
+| DELETE | `/api/v1/admin/tokens/{id}` | none | 204, revokes the token |
 
-**AdminTokenDto**: `id, prefix ("GOPING-"+первые 4), label, userId (null до
-активации), createdAt, activatedAt, lastUsedAt, revokedAt`.
-
-Пример выдачи токена другу:
+AdminTokenDto fields: `id`, `prefix` (`GOPING-` plus the first 4 characters), `label`, `userId` (null before activation), `createdAt`, `activatedAt`, `lastUsedAt`, `revokedAt`.
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/admin/tokens `
-  -Headers @{ "X-Admin-Secret" = "<твой ADMIN_SECRET>" } `
+  -Headers @{ "X-Admin-Secret" = "<your ADMIN_SECRET>" } `
   -ContentType "application/json" -Body '{"label":"friend"}'
 ```
 
----
+## 8. Message encryption
 
-## 8. Шифрование сообщений
+This is encryption at rest, not end to end. The client sends plaintext over TLS, the server encrypts before writing to SQLite and decrypts when serving chat members.
 
-Это **шифрование at rest**, не E2E: клиент шлёт plaintext по TLS, сервер
-шифрует перед записью в SQLite и расшифровывает при чтении для участников чата.
+- Algorithm: GOST R 34.12-2015 Kuznyechik in CTR mode with GOST R 34.13-2015, plus encrypt then MAC with HMAC-SHA256 over nonce and ciphertext. Each message uses a random nonce.
+- Database stores Base64 `ciphertext`, `nonce`, `mac` and the string `GOST34.12-2015/KUZNYECHIK/CTR`, which is also exposed as `MessageDto.algorithm`. Voice and call payloads are encrypted JSON strings in the same way.
+- Keys are derived as SHA-256(label, 0x00, material) with labels `goping/message-encryption/v1` and `goping/message-authentication/v1`. Material is `MESSAGE_KEY` as 64 hex characters or Base64 of 32 bytes. If it is empty, the bytes of `JWT_SECRET` are used. Changing `JWT_SECRET` without a separate `MESSAGE_KEY` makes old messages unreadable.
+- A MAC mismatch replaces the text with a damaged message marker. Forwarding it returns 400 `MESSAGE_DAMAGED`.
 
-- Алгоритм: **ГОСТ Р 34.12-2015 «Кузнечик», режим CTR** (ГОСТ Р 34.13-2015),
-  encrypt-then-MAC с **HMAC-SHA256** (32-байтный тег над nonce‖ciphertext),
-  случайный nonce на каждое сообщение.
-- В БД: Base64 `ciphertext`, `nonce`, `mac` + строка алгоритма
-  `"GOST34.12-2015/KUZNYECHIK/CTR"` (видна в `MessageDto.algorithm`).
-  Voice/call-payload — такие же зашифрованные JSON-строки.
-- Ключи: SHA-256(label‖0x00‖material), labels `goping/message-encryption/v1`
-  и `goping/message-authentication/v1`. Material — `MESSAGE_KEY` (64 hex или
-  Base64 от 32 байт), иначе байты `JWT_SECRET`.
-  **Смена `JWT_SECRET` без заданного `MESSAGE_KEY` делает старые сообщения
-  нечитаемыми.** Для форка задай `MESSAGE_KEY` отдельно сразу.
-- MAC не сошёлся → текст заменяется на `[сообщение повреждено: не удалось
-  проверить подпись]`; пересылка такого → 400 `MESSAGE_DAMAGED`.
+## 9. Server configuration
 
----
+Environment variables can also be set in a `.env` file in the working directory.
 
-## 9. Конфигурация сервера
-
-Переменные окружения (без префикса) или файл `.env` в рабочей папке
-(`spring.config.import: optional:file:.env`).
-
-| Переменная | Default | Назначение |
+| Variable | Default | Purpose |
 |---|---|---|
-| `HTTP_PORT` | `8080` | порт |
-| `DATABASE_PATH` | `./data/goping.db` | SQLite-файл, авто-миграции (`AUTO_MIGRATE=true`, V1–V8) |
-| `JWT_SECRET` | — | **обязателен, ≥32 символов**, иначе сервер не стартует |
-| `JWT_ISSUER` | `goping` | iss в JWT |
-| `ACCESS_TOKEN_TTL` | `PT15M` | ISO-8601 duration |
-| `REFRESH_TOKEN_TTL` | `P30D` | должен быть больше access TTL |
-| `UPLOAD_DIR` | `./data/uploads` | корень медиа (`avatars/`, `voice/`) |
-| `PUBLIC_BASE_URL` | `http://localhost:8080` | префикс абсолютных URL аватаров/войсов |
-| `MAX_AVATAR_BYTES` | `5242880` | лимит аватара (5 МиБ) |
-| `MAX_UPLOAD_BYTES` | `10485760` | лимит multipart (войс ≤10 МиБ) |
-| `AUTH_RATE_LIMIT` / `AVAILABILITY_RATE_LIMIT` | `30` / `120` | per-IP per-minute |
-| `CORS_ORIGINS` | `*` | разрешённые origin |
-| `AUTO_MIGRATE` | `true` | миграции при старте |
-| `ALLOW_DELETE_OTHERS_MESSAGES` | `true` | удаление чужих сообщений для всех; видно в `/client-config` |
-| `ADMIN_SECRET` | пусто | пусто = админ-API выключен |
-| `MESSAGE_KEY` | пусто | 64-hex / Base64-32B; пусто → ключ из `JWT_SECRET` |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | пусто | оба нужны для GitHub-входа |
-| `GITHUB_CALLBACK_URL` | `http://localhost:8080/api/v1/auth/github/callback` | должен совпадать с OAuth App |
-| `GITHUB_SCOPE` | `read:user` | |
-| `TURN_URLS` | список `turn:…` через запятую | TURN для `/rtc/config`; в оригинале зашиты LAN/Radmin-адреса — **в форке замени на свои** |
-| `TURN_USERNAME` / `TURN_CREDENTIAL` | `goping` / `gopingturn` | креды coturn |
+| `HTTP_PORT` | `8080` | HTTP port |
+| `DATABASE_PATH` | `./data/goping.db` | SQLite file, migrations V1 to V8 |
+| `JWT_SECRET` | none | Required, at least 32 characters |
+| `JWT_ISSUER` | `goping` | JWT issuer |
+| `ACCESS_TOKEN_TTL` | `PT15M` | Access token lifetime |
+| `REFRESH_TOKEN_TTL` | `P30D` | Must be longer than access lifetime |
+| `UPLOAD_DIR` | `./data/uploads` | Root for `avatars/` and `voice/` |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Prefix for absolute media URLs |
+| `MAX_AVATAR_BYTES` | `5242880` | Avatar limit, 5 MiB |
+| `MAX_UPLOAD_BYTES` | `10485760` | Multipart limit, voice up to 10 MiB |
+| `AUTH_RATE_LIMIT` | `30` | Auth requests per minute per IP |
+| `AVAILABILITY_RATE_LIMIT` | `120` | Username checks per minute per IP |
+| `CORS_ORIGINS` | `*` | Allowed origins |
+| `AUTO_MIGRATE` | `true` | Apply migrations on startup |
+| `ALLOW_DELETE_OTHERS_MESSAGES` | `true` | Allow deleting other people's messages, exposed in `/client-config` |
+| `ADMIN_SECRET` | empty | Empty disables the admin API |
+| `MESSAGE_KEY` | empty | 64 hex characters or Base64 of 32 bytes, derived from `JWT_SECRET` when empty |
+| `GITHUB_CLIENT_ID` | empty | GitHub OAuth client ID |
+| `GITHUB_CLIENT_SECRET` | empty | GitHub OAuth client secret |
+| `GITHUB_CALLBACK_URL` | `http://localhost:8080/api/v1/auth/github/callback` | Must match the OAuth App |
+| `GITHUB_SCOPE` | `read:user` | Requested scope |
+| `TURN_URLS` | comma separated `turn:...` | TURN servers for `/rtc/config` |
+| `TURN_USERNAME` | `goping` | coturn username |
+| `TURN_CREDENTIAL` | `gopingturn` | coturn credential |
 
-Клиентская переменная: `GOPING_API_URL` — базовый URL сервера для WPF-клиента
-(default `http://localhost:8080`).
+The WPF client uses `GOPING_API_URL` to select the server, default `http://localhost:8080`.
 
-### Чеклист форка
+### Fork checklist
 
-1. Свои `JWT_SECRET`, `ADMIN_SECRET`, **`MESSAGE_KEY`** (сразу, отдельный).
-2. Свой `PUBLIC_BASE_URL` (IP/домен, видимый друзьям) — иначе ссылки на
-   аватары/войсы будут битыми у других машин.
-3. Свой coturn + `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL`, если звонки
-   не только в одной локалке.
-4. GitHub OAuth App со своим `GITHUB_CALLBACK_URL` (если нужен вход через GitHub).
-5. В клиенте: имя/брендинг, репозиторий обновлений (`UpdateService.DefaultGitHubRepo`
-   захардкожен, плюс `make-release.ps1`), `GOPING_API_URL` по умолчанию. Встроенная
-   консоль (`AppLog`, `HostControlService`) умеет запускать сервер, coturn в WSL и
-   Radmin VPN прямо из приложения.
+1. Set your own `JWT_SECRET`, `ADMIN_SECRET` and a separate `MESSAGE_KEY`.
+2. Set `PUBLIC_BASE_URL` to an address your friends can reach, or avatar and voice links will break.
+3. Set up coturn and `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL` if calls leave the local network.
+4. Create a GitHub OAuth App and set `GITHUB_CALLBACK_URL` if you want GitHub login.
+5. In the client, change the branding, the update repository in `UpdateService.DefaultGitHubRepo` and in `make-release.ps1`, and the default `GOPING_API_URL`. The in-app console uses `AppLog` and `HostControlService` to start the server, coturn in WSL and Radmin VPN.

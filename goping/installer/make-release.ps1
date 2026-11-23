@@ -10,7 +10,7 @@
 Дальше вручную:
 1. Создай на GitHub релиз с тегом v{версия из csproj}, например v1.0.1.
 2. Прикрепи к релизу GoPing-win-x64.zip и GoPing-win-x64.zip.sha256.
-3. Клиенты с указанным репозиторием в Settings → Updates увидят обновление.
+3. Клиенты увидят обновление автоматически (репозиторий RealBibus/GoPing зашит в код).
 
 Usage:
   powershell -ExecutionPolicy Bypass -File .\installer\make-release.ps1
@@ -60,4 +60,4 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "  1. Create a GitHub release with tag v$version"
 Write-Host "  2. Attach GoPing-win-x64.zip and GoPing-win-x64.zip.sha256"
-Write-Host "  3. In GoPing: Settings -> Updates -> set repo owner/name -> Check for updates"
+Write-Host "  3. In GoPing: Settings -> Updates -> Check for updates -> Install update"

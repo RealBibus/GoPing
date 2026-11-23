@@ -1,12 +1,18 @@
-; GoPing Messenger installer
-; Build with Inno Setup 6: ISCC.exe GoPing.iss
-; Recommended: run build-installer.ps1, which publishes the app and compiles this script.
+; ---------------------------------------------------------------------------
+; GoPing Messenger — native Inno Setup installer
+;
+; Build with:  powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
+; Manual:      ISCC.exe /dAppVersion=1.0.0 GoPing.iss
+; ---------------------------------------------------------------------------
+
+#ifndef AppVersion
+  #define AppVersion "1.0.0"
+#endif
 
 #define AppName "GoPing"
-#define AppVersion "1.0.0"
 #define AppPublisher "GoPing"
 #define AppExeName "GoPing.exe"
-#define AppDescription "GoPing - a local messenger for you and your friends, with login via GitHub or a server token!"
+#define AppRepo "https://github.com/RealBibus/GoPing"
 
 [Setup]
 AppId={{A7F4D9E2-6C1B-4D8A-9F3E-2B7C5D1A8E40}
@@ -14,55 +20,72 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-AppPublisherURL=https://github.com/
-AppSupportURL=https://github.com/
-AppUpdatesURL=https://github.com/
+AppPublisherURL={#AppRepo}
+AppSupportURL={#AppRepo}/issues
+AppUpdatesURL={#AppRepo}/releases
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
 DisableProgramGroupPage=yes
-; Publish output produced by build-installer.ps1
-SourceDir=publish\win-x64
-OutputDir=..\output
-OutputBaseFilename=GoPing-Setup-{#AppVersion}-win-x64
-Compression=lzma2/max
-SolidCompression=yes
+DisableWelcomePage=no
+
+; Published app files are produced by build-installer.ps1.
+OutputDir=output
+OutputBaseFilename=GoPing-Setup-v{#AppVersion}-win-x64
+
+; Branding
+SetupIconFile=Resources\goping.ico
+WizardImageFile=Resources\wizard-image.bmp
+WizardSmallImageFile=Resources\wizard-small-image.bmp
 WizardStyle=modern
+
+; Per-user install — no administrator rights required.
+PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
-UninstallDisplayName={#AppName}
+
+Compression=lzma2/max
+SolidCompression=yes
+UninstallDisplayName=GoPing Messenger
 UninstallDisplayIcon={app}\{#AppExeName}
 CloseApplications=yes
+CloseApplicationsFilter=GoPing.exe
 RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+
+[Messages]
+SetupAppTitle=GoPing Setup
+SetupWindowTitle=GoPing Setup v{#AppVersion}
+WelcomeLabel1=Welcome to the GoPing Setup Wizard
+WelcomeLabel2=GoPing {#AppVersion} will be installed for your user account.%n%nYour chats and settings in the GoPing data folder are kept.%n%nIt is recommended to close all other applications before continuing.
+FinishedHeadingLabel=GoPing is installed
+FinishedLabel=GoPing {#AppVersion} is ready to use. Launch it from the Start menu or the desktop shortcut.
+ClickFinish=Click Finish to exit GoPing Setup.
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts"; Flags: unchecked
 
 [Files]
-Source: "*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\{#AppExeName}"
+Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Description: "Launch GoPing"; Flags: nowait postinstall skipifsilent
 
 [InstallDelete]
-; Clean old files from previous installs to avoid stale assemblies/assets.
+; Clean stale files from a previous install so upgraded builds stay consistent.
 Type: filesandordirs; Name: "{app}\*"
 
 [Code]
 function InitializeSetup(): Boolean;
 begin
-  // WebView2 Runtime is required by GoPing (used for calls/voice recorder).
-  // Most Windows 10/11 systems already have it installed.
+  // GoPing uses WebView2 for calls and voice messages. Most Windows 10/11
+  // systems already ship the runtime; keep the install simple.
   Result := True;
 end;

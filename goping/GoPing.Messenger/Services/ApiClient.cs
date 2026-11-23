@@ -298,7 +298,12 @@ public sealed class ApiClient : IDisposable
     {
         using var form = new MultipartFormDataContent();
         var file = new ByteArrayContent(audioBytes);
-        file.Headers.ContentType = new MediaTypeHeaderValue(string.IsNullOrWhiteSpace(contentType) ? "audio/webm" : contentType);
+        // MediaRecorder отдаёт MIME вида "audio/webm;codecs=opus" — конструктор
+        // MediaTypeHeaderValue такое не принимает, нужен парсер с параметрами.
+        string mime = string.IsNullOrWhiteSpace(contentType) ? "audio/webm" : contentType;
+        file.Headers.ContentType = MediaTypeHeaderValue.TryParse(mime, out var parsed)
+            ? parsed
+            : new MediaTypeHeaderValue("audio/webm");
         form.Add(file, "audio", string.IsNullOrWhiteSpace(fileName) ? "voice.webm" : fileName);
         form.Add(new StringContent(Math.Max(0, durationSec).ToString(System.Globalization.CultureInfo.InvariantCulture)), "durationSec");
         if (!string.IsNullOrWhiteSpace(replyToId))
