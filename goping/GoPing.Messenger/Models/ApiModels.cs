@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace GoPing.Models;
 
@@ -60,6 +61,7 @@ public sealed record PollDto(
     /// <summary>Set by servers that report the vote flag separately from the option id.</summary>
     public bool VotedOptionIdSet { get; init; }
 
+    [JsonConstructor]
     public PollDto(
         string id,
         string question,

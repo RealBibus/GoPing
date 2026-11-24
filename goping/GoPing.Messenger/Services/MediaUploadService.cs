@@ -32,11 +32,20 @@ public sealed class MediaUploadService
         if (mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(mime, "image/gif", StringComparison.OrdinalIgnoreCase))
         {
-            var compressed = await _compression.CompressImageAsync(bytes);
-            bytes = compressed.Bytes;
-            mime = compressed.Mime;
-            string renamed = Path.ChangeExtension(fileName, compressed.Extension);
-            if (!string.IsNullOrWhiteSpace(renamed)) fileName = renamed;
+            try
+            {
+                var compressed = await _compression.CompressImageAsync(bytes);
+                bytes = compressed.Bytes;
+                mime = compressed.Mime;
+                string renamed = Path.ChangeExtension(fileName, compressed.Extension);
+                if (!string.IsNullOrWhiteSpace(renamed)) fileName = renamed;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                // Formats such as WebP and HEIC are not supported by System.Drawing on Windows.
+                // Send the original file and let the server accept or reject it by extension.
+                AppLog.Warn("Image compression skipped, uploading original: " + ex.Message);
+            }
         }
         else if (mime.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
         {
